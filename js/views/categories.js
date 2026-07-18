@@ -1,175 +1,446 @@
-// Dedicated Categories view.
+// Categories: tree editor on the left, transactions of the selected category
+// on the right.
 //
 // The tree is up to MAX_DEPTH levels deep — category > subcategory >
-// sub-subcategory — ordered by `sort_order` within each parent. The generic
-// table view renders that flat, hiding the hierarchy entirely, with ordering
-// editable only by typing numbers into a modal.
+// sub-subcategory — ordered by `sort_order` within each parent.
+//
+// Structural edits are BUFFERED. Dragging and renaming mutate a local working
+// copy and mark the view dirty; nothing is written until Save. A session of
+// twenty drags then costs one batch (2 API calls) instead of twenty batches,
+// which is what kept tripping Google's per-minute write quota. Destructive or
+// modal actions flush the buffer first so they never operate on stale rows.
 //
 // Drag uses pointer events rather than HTML5 drag-and-drop: native DnD gives
 // no control over the drop position mid-gesture, so rows can't be animated out
-// of the way. Here every row is one flat list, the dragged row and its whole
-// subtree are lifted out, and the remaining rows translate to open a gap —
-// which CSS transitions animate for free.
-//
-// Depth comes from horizontal position, the way outliners do it: drag right to
-// nest under the row above, left to pull back out. That is what disambiguates
-// "last child of the group above" from "new top-level category" when you drop
-// on the boundary between two groups.
-//
-// Reorders go through repo.saveMany() so a multi-row change costs two API
-// calls rather than two per row — the difference between staying under
-// Google's per-minute write quota and tripping it.
+// of the way. Depth comes from horizontal position, the way outliners do it.
 
 import * as repo from '../repo.js';
 import { parseNum } from '../schema.js';
-import { el, clear, toast, openModal, confirmDialog, emptyState } from '../ui.js';
+import {
+  el, clear, toast, openModal, confirmDialog, emptyState,
+  fmtMoney, fmtDate, fmtDateTime, toDateTimeInput,
+} from '../ui.js';
 
 const TYPES = [
   { key: 'expense', label: 'Expense' },
   { key: 'income', label: 'Income' },
 ];
 
-const MAX_DEPTH = 2;       // 0 = category, 1 = subcategory, 2 = sub-subcategory
-const INDENT_PX = 26;      // visual indent per nesting level
-const INDENT_TRIGGER = 14; // horizontal travel before the level changes
-
+const MAX_DEPTH = 2;
+const INDENT_PX = 26;
 const DEPTH_NAMES = ['category', 'subcategory', 'sub-subcategory'];
 
 export function renderCategories(container) {
   let activeType = localStorage.getItem('sufyam.cat.type') || 'expense';
   let query = '';
   let saving = false;
+  let selectedId = null;
+  let rollUp = true; // include descendants' transactions in the right pane
 
-  const listWrap = el('div');
+  // Buffered edits: the tree as the user has arranged it, plus renames.
+  let working = [];              // [{ id, depth }]
+  let renames = new Map();       // id -> new name
 
-  function paint() {
-    clear(container);
-    container.append(buildToolbar(), listWrap);
-    paintList();
+  const treePane = el('div', { class: 'pane' });
+  const detailPane = el('div', { class: 'pane' });
+
+  function syncWorking() {
+    working = buildTree().flat.map(({ cat, depth }) => ({ id: cat.id, depth }));
+    renames = new Map();
   }
 
-  function buildToolbar() {
-    const segmented = el('div', { class: 'segmented' }, TYPES.map((t) => el('button', {
-      class: `segmented-btn${t.key === activeType ? ' is-active' : ''}`,
-      text: t.label,
-      onclick: () => {
-        activeType = t.key;
-        localStorage.setItem('sufyam.cat.type', t.key);
-        paint();
-      },
-    })));
+  // ---------- model ----------
 
-    return el('div', { class: 'toolbar' }, [
-      segmented,
-      el('input', {
-        class: 'input search',
-        type: 'search',
-        placeholder: 'Search categories…',
-        value: query,
-        oninput: (e) => { query = e.target.value.toLowerCase(); paintList(); },
-      }),
-      el('div', { class: 'spacer' }),
-      el('button', {
-        class: 'btn',
-        text: '+ New category',
-        onclick: () => openCategoryForm({ type: activeType }, paint),
-      }),
-    ]);
-  }
-
-  /**
-   * Flattens the tree into the ordered list the drag logic works on, and
-   * separates out rows whose parent no longer exists.
-   */
-  function buildFlat() {
+  function buildTree() {
     const ofType = repo.rows('Categories').filter((c) => (c.type || 'expense') === activeType);
     const live = new Map(ofType.map((c) => [c.id, c]));
-    const childrenOf = new Map();
-
+    const kids = new Map();
     for (const cat of ofType) {
       const key = cat.parent_id && live.has(cat.parent_id) ? cat.parent_id : '';
-      if (!childrenOf.has(key)) childrenOf.set(key, []);
-      childrenOf.get(key).push(cat);
+      if (!kids.has(key)) kids.set(key, []);
+      kids.get(key).push(cat);
     }
-    for (const list of childrenOf.values()) list.sort(bySortOrder);
+    for (const list of kids.values()) list.sort(bySortOrder);
 
-    // A row pointing at a parent that isn't here any more. Kept out of the
-    // tree so it can be re-homed deliberately rather than silently reappearing
-    // at the top level.
     const orphans = ofType.filter((c) => c.parent_id && !live.has(c.parent_id));
     const orphanIds = new Set(orphans.map((c) => c.id));
 
     const flat = [];
     const walk = (parentId, depth) => {
-      for (const cat of childrenOf.get(parentId) || []) {
+      for (const cat of kids.get(parentId) || []) {
         if (orphanIds.has(cat.id)) continue;
         flat.push({ cat, depth });
         if (depth < MAX_DEPTH) walk(cat.id, depth + 1);
       }
     };
     walk('', 0);
-
     return { flat, orphans };
   }
 
-  function paintList() {
-    clear(listWrap);
-    const { flat, orphans } = buildFlat();
+  /** parent_id + sort_order implied by the current working order. */
+  function derive() {
+    const out = new Map();
+    const parentAt = [];
+    const counters = new Map();
+    let prevDepth = -1;
+
+    for (const { id, depth: raw } of working) {
+      const depth = Math.max(0, Math.min(raw, prevDepth + 1, MAX_DEPTH));
+      const parentId = depth === 0 ? '' : (parentAt[depth - 1] || '');
+      const key = parentId || '__root__';
+      const sortOrder = (counters.get(key) || 0) + 1;
+      counters.set(key, sortOrder);
+      parentAt[depth] = id;
+      parentAt.length = depth + 1;
+      prevDepth = depth;
+      out.set(id, { parent_id: parentId, sort_order: sortOrder, depth });
+    }
+    return out;
+  }
+
+  /** Rows whose buffered state differs from what's in the sheet. */
+  function dirtyRows() {
+    const derived = derive();
+    const out = [];
+    for (const [id, d] of derived) {
+      const cat = repo.byId('Categories', id);
+      if (!cat) continue;
+      const name = renames.has(id) ? renames.get(id) : cat.name;
+      if ((cat.parent_id || '') !== d.parent_id
+        || parseNum(cat.sort_order) !== d.sort_order
+        || (cat.name || '') !== name) {
+        out.push({ ...cat, parent_id: d.parent_id, sort_order: d.sort_order, name });
+      }
+    }
+    return out;
+  }
+
+  const isDirty = () => dirtyRows().length > 0;
+
+  async function flush() {
+    const dirty = dirtyRows();
+    if (!dirty.length) return true;
+    saving = true;
+    paintTree();
+    try {
+      await repo.saveMany('Categories', dirty);
+      toast(`Saved — ${dirty.length} categor${dirty.length === 1 ? 'y' : 'ies'} updated`);
+      syncWorking();
+      return true;
+    } catch (err) {
+      toast(err.message, { error: true });
+      return false;
+    } finally {
+      saving = false;
+      paintAll();
+    }
+  }
+
+  /** Buffered edits must not linger across a modal or a delete. */
+  async function withFlush(fn) {
+    if (isDirty() && !(await flush())) return;
+    fn();
+  }
+
+  // ---------- painting ----------
+
+  function paintAll() { paintTree(); paintDetail(); }
+
+  function paint() {
+    clear(container);
+    container.append(el('div', { class: 'cat-split' }, [treePane, detailPane]));
+    paintAll();
+  }
+
+  function paintTree() {
+    clear(treePane);
+    const { orphans } = buildTree();
+    const derived = derive();
     const usage = usageCounts();
     const filtering = Boolean(query);
+    const dirty = dirtyRows();
 
-    const matches = (cat) => (cat.name || '').toLowerCase().includes(query);
+    treePane.append(el('div', { class: 'toolbar' }, [
+      el('div', { class: 'segmented' }, TYPES.map((t) => el('button', {
+        class: `segmented-btn${t.key === activeType ? ' is-active' : ''}`,
+        text: t.label,
+        onclick: () => withFlush(() => {
+          activeType = t.key;
+          localStorage.setItem('sufyam.cat.type', t.key);
+          selectedId = null;
+          syncWorking();
+          paintAll();
+        }),
+      }))),
+      el('input', {
+        class: 'input search',
+        type: 'search',
+        placeholder: 'Search…',
+        value: query,
+        oninput: (e) => { query = e.target.value.toLowerCase(); paintTree(); },
+      }),
+      el('div', { class: 'spacer' }),
+      el('button', {
+        class: 'btn btn-sm',
+        text: '+ New',
+        onclick: () => withFlush(() => openCategoryForm({ type: activeType }, afterWrite)),
+      }),
+    ]));
+
+    // Save bar only exists when there is something to save.
+    if (dirty.length) {
+      treePane.append(el('div', { class: 'save-bar' }, [
+        el('span', { class: 'save-dot' }),
+        el('span', {
+          class: 'save-text',
+          text: `${dirty.length} unsaved change${dirty.length === 1 ? '' : 's'}`,
+        }),
+        el('div', { style: 'flex:1' }),
+        el('button', {
+          class: 'btn btn-ghost btn-sm',
+          text: 'Discard',
+          disabled: saving || null,
+          onclick: () => { syncWorking(); paintAll(); toast('Changes discarded'); },
+        }),
+        el('button', {
+          class: 'btn btn-sm',
+          text: saving ? 'Saving…' : 'Save',
+          disabled: saving || null,
+          onclick: flush,
+        }),
+      ]));
+    }
+
+    if (orphans.length) treePane.append(buildOrphanCard(orphans, usage));
+
+    treePane.append(el('div', {
+      class: 'list-hint',
+      text: filtering
+        ? 'Clear the search to reorder — dragging is disabled while filtering.'
+        : '⠿ Drag to reorder, right to nest. Click to see transactions, double-click to rename.',
+    }));
+
+    const matchesQuery = (id) => {
+      const cat = repo.byId('Categories', id);
+      const name = renames.get(id) ?? cat?.name ?? '';
+      return name.toLowerCase().includes(query);
+    };
+
     const visible = filtering
-      ? flat.filter(({ cat, depth }, i) => {
-          if (matches(cat)) return true;
-          // keep an ancestor visible when a descendant matches
-          for (let j = i + 1; j < flat.length && flat[j].depth > depth; j++) {
-            if (matches(flat[j].cat)) return true;
+      ? working.filter(({ id, depth }, i) => {
+          if (matchesQuery(id)) return true;
+          for (let j = i + 1; j < working.length && working[j].depth > depth; j++) {
+            if (matchesQuery(working[j].id)) return true;
           }
           return false;
         })
-      : flat;
+      : working;
 
-    if (!visible.length && !orphans.length) {
-      listWrap.append(emptyState(
+    if (!visible.length) {
+      treePane.append(emptyState(
         '🏷',
-        flat.length ? 'No categories match.' : `No ${activeType} categories yet.`,
+        working.length ? 'No categories match.' : `No ${activeType} categories yet.`,
         el('button', {
           class: 'btn',
           text: '+ New category',
-          onclick: () => openCategoryForm({ type: activeType }, paint),
+          onclick: () => openCategoryForm({ type: activeType }, afterWrite),
         }),
       ));
       return;
     }
 
-    if (orphans.length) listWrap.append(buildOrphanCard(orphans, usage));
-
-    listWrap.append(el('div', {
-      class: 'list-hint',
-      text: filtering
-        ? 'Clear the search to reorder — dragging is disabled while filtering.'
-        : '⠿ Drag to reorder. Drag right to nest it under the row above, left to pull it back out.',
-    }));
-
     const list = el('div', { class: 'cat-list' });
-    for (const item of visible) list.append(buildRow(item, usage, { draggable: !filtering }));
-    listWrap.append(list);
-
-    if (!filtering) attachDrag(list);
+    for (const item of visible) {
+      const row = buildRow(item, derived, usage, { draggable: !filtering });
+      if (row) list.append(row);
+    }
+    treePane.append(list);
+    if (!filtering && !saving) attachDrag(list);
   }
 
-  /** Recovery UI for rows whose parent was deleted. */
+  function buildRow({ id, depth }, derived, usage, { draggable }) {
+    const cat = repo.byId('Categories', id);
+    if (!cat) return null;
+    const shownDepth = derived.get(id)?.depth ?? depth;
+    const name = renames.get(id) ?? cat.name ?? '';
+    const count = descendantIds(id).reduce((n, cid) => n + (usage.get(cid) || 0), 0);
+    const own = usage.get(id) || 0;
+
+    const nameNode = el('span', { class: 'cat-name', text: name || '(unnamed)' });
+    nameNode.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      startInlineRename(nameNode, id, name, (value) => {
+        renames.set(id, value);
+        paintTree();
+      });
+    });
+
+    const row = el('div', {
+      class: `cat-row depth-${shownDepth}${id === selectedId ? ' is-selected' : ''}`,
+      'data-id': id,
+      'data-depth': String(shownDepth),
+      style: `--indent:${shownDepth * INDENT_PX}px`,
+      // Selection only re-styles the existing rows. Repainting the tree here
+      // would replace this node between the two clicks of a double-click, so
+      // the dblclick-to-rename listener would never fire.
+      onclick: (e) => {
+        if (e.target.closest('input, button')) return;
+        selectedId = id;
+        for (const other of treePane.querySelectorAll('.cat-row')) {
+          other.classList.toggle('is-selected', other.dataset.id === id);
+        }
+        paintDetail();
+      },
+    }, [
+      draggable
+        ? el('span', { class: 'drag-handle', text: '⠿', title: 'Drag to reorder' })
+        : el('span', { style: 'width:10px' }),
+      el('span', { class: 'cat-dot', style: `background:${normaliseHex(cat.color_hex) || 'var(--border)'}` }),
+      nameNode,
+      count ? el('span', {
+        class: 'chip',
+        title: own === count ? `${own} transactions` : `${own} directly, ${count} including subcategories`,
+        text: String(count),
+      }) : null,
+      el('span', { style: 'flex:1' }),
+      el('button', {
+        class: 'btn btn-ghost btn-sm cat-action',
+        text: 'Edit',
+        onclick: (e) => { e.stopPropagation(); withFlush(() => openCategoryForm(cat, afterWrite)); },
+      }),
+      el('button', {
+        class: 'btn btn-danger btn-sm cat-action',
+        text: '🗑',
+        title: 'Delete',
+        onclick: (e) => { e.stopPropagation(); withFlush(() => deleteCategory(cat, own, afterWrite)); },
+      }),
+    ]);
+    return row;
+  }
+
+  function afterWrite() {
+    syncWorking();
+    paintAll();
+  }
+
+  // ---------- right pane ----------
+
+  function paintDetail() {
+    clear(detailPane);
+
+    if (!selectedId) {
+      detailPane.append(el('div', { class: 'card detail-empty' }, [
+        emptyState('👈', 'Select a category to see its transactions.'),
+      ]));
+      return;
+    }
+
+    const cat = repo.byId('Categories', selectedId);
+    if (!cat) {
+      selectedId = null;
+      return paintDetail();
+    }
+
+    const ids = rollUp ? descendantIds(selectedId) : [selectedId];
+    const idSet = new Set(ids);
+    const txns = repo.rows('Transactions')
+      .filter((t) => idSet.has(t.category_id))
+      .sort((a, b) => String(b.transaction_date).localeCompare(String(a.transaction_date)));
+
+    const total = txns.reduce((s, t) => s + parseNum(t.amount), 0);
+    const hasChildren = descendantIds(selectedId).length > 1;
+
+    detailPane.append(el('div', { class: 'card detail-card' }, [
+      el('div', { class: 'detail-head' }, [
+        el('span', {
+          class: 'cat-dot',
+          style: `background:${normaliseHex(cat.color_hex) || 'var(--border)'};width:14px;height:14px`,
+        }),
+        el('div', { style: 'min-width:0;flex:1' }, [
+          el('div', { class: 'detail-title', text: cat.name || '(unnamed)' }),
+          el('div', { class: 'detail-crumb', text: breadcrumb(selectedId) }),
+        ]),
+        el('button', {
+          class: 'btn btn-ghost btn-sm',
+          text: 'Edit category',
+          onclick: () => withFlush(() => openCategoryForm(cat, afterWrite)),
+        }),
+      ]),
+
+      el('div', { class: 'detail-stats' }, [
+        el('div', {}, [
+          el('div', { class: 'detail-stat-value', text: fmtMoney(total) }),
+          el('div', { class: 'detail-stat-label', text: 'Total' }),
+        ]),
+        el('div', {}, [
+          el('div', { class: 'detail-stat-value', text: String(txns.length) }),
+          el('div', { class: 'detail-stat-label', text: 'Transactions' }),
+        ]),
+        el('div', {}, [
+          el('div', {
+            class: 'detail-stat-value',
+            text: txns.length ? fmtMoney(total / txns.length) : '—',
+          }),
+          el('div', { class: 'detail-stat-label', text: 'Average' }),
+        ]),
+      ]),
+
+      hasChildren
+        ? el('label', { class: 'rollup-toggle' }, [
+            el('input', {
+              type: 'checkbox',
+              checked: rollUp || null,
+              onchange: (e) => { rollUp = e.target.checked; paintDetail(); },
+            }),
+            'Include subcategories',
+          ])
+        : null,
+
+      txns.length
+        ? el('div', { class: 'txn-list' }, txns.map((t) => buildTxnRow(t, cat)))
+        : emptyState('📭', rollUp && hasChildren
+          ? 'No transactions in this category or its subcategories.'
+          : 'No transactions in this category.'),
+    ]));
+  }
+
+  function buildTxnRow(txn, selectedCat) {
+    const cat = repo.byId('Categories', txn.category_id);
+    const labels = String(txn.labels || '').split('|').map((s) => s.trim()).filter(Boolean);
+
+    return el('div', {
+      class: 'txn-row',
+      onclick: () => openTransaction(txn, afterWrite),
+    }, [
+      el('div', { class: 'txn-main' }, [
+        el('div', { class: 'txn-note', text: txn.notes || '(no note)' }),
+        el('div', { class: 'txn-meta' }, [
+          el('span', { text: fmtDate(txn.transaction_date) }),
+          cat && cat.id !== selectedCat.id
+            ? el('span', { class: 'chip', text: cat.name || '' })
+            : null,
+          ...labels.map((l) => el('span', { class: 'chip', text: l })),
+        ]),
+      ]),
+      el('div', { class: 'txn-amount', text: fmtMoney(txn.amount) }),
+    ]);
+  }
+
+  // ---------- orphans ----------
+
   function buildOrphanCard(orphans, usage) {
     return el('div', { class: 'card orphan-card' }, [
       el('div', { class: 'orphan-head' }, [
         el('span', { class: 'orphan-icon', text: '⚠' }),
         el('div', {}, [
-          el('div', { class: 'orphan-title', text: `${orphans.length} categor${orphans.length === 1 ? 'y is' : 'ies are'} orphaned` }),
+          el('div', {
+            class: 'orphan-title',
+            text: `${orphans.length} categor${orphans.length === 1 ? 'y is' : 'ies are'} orphaned`,
+          }),
           el('div', {
             class: 'orphan-sub',
             text: 'Their parent was deleted, so they no longer appear in the tree. '
-              + 'Pick where each one belongs — they are still attached to their transactions.',
+              + 'Pick where each belongs — their transactions are untouched.',
           }),
         ]),
       ]),
@@ -179,27 +450,20 @@ export function renderCategories(container) {
 
   function buildOrphanRow(cat, usage) {
     const count = usage.get(cat.id) || 0;
-    const select = el('select', { class: 'select', style: 'max-width:240px' });
-
-    const rebuild = () => {
-      clear(select);
-      select.append(el('option', { value: '', text: '— make it a top-level category —' }));
-      for (const { cat: candidate, depth } of buildFlat().flat) {
-        if (candidate.id === cat.id) continue;
-        if (depth >= MAX_DEPTH) continue; // nothing can nest below the last level
-        select.append(el('option', {
-          value: candidate.id,
-          text: `${'　'.repeat(depth)}${depth ? '↳ ' : ''}${candidate.name || candidate.id}`,
-        }));
-      }
-    };
-    rebuild();
+    const select = el('select', { class: 'select', style: 'max-width:200px' });
+    select.append(el('option', { value: '', text: '— top-level category —' }));
+    for (const { cat: candidate, depth } of buildTree().flat) {
+      if (candidate.id === cat.id || depth >= MAX_DEPTH) continue;
+      select.append(el('option', {
+        value: candidate.id,
+        text: `${'　'.repeat(depth)}${depth ? '↳ ' : ''}${candidate.name || candidate.id}`,
+      }));
+    }
 
     return el('div', { class: 'orphan-row' }, [
       el('span', { class: 'cat-dot', style: `background:${normaliseHex(cat.color_hex) || 'var(--border)'}` }),
       el('span', { style: 'font-weight:550', text: cat.name || '(unnamed)' }),
-      count ? el('span', { class: 'chip', text: `${count} txn${count === 1 ? '' : 's'}` }) : null,
-      el('span', { class: 'chip chip-warn', text: `was under ${cat.parent_id}` }),
+      count ? el('span', { class: 'chip', text: `${count} txn` }) : null,
       el('span', { style: 'flex:1' }),
       select,
       el('button', {
@@ -210,58 +474,19 @@ export function renderCategories(container) {
           btn.disabled = true;
           btn.textContent = 'Moving…';
           try {
-            const parentId = select.value;
             await repo.save('Categories', {
               ...cat,
-              parent_id: parentId,
-              sort_order: nextSortOrder(parentId, cat.type || activeType),
+              parent_id: select.value,
+              sort_order: nextSortOrder(select.value, cat.type || activeType),
             });
             toast(`"${cat.name}" moved`);
-            paint();
+            afterWrite();
           } catch (err) {
             btn.disabled = false;
             btn.textContent = 'Move here';
             toast(err.message, { error: true });
           }
         },
-      }),
-    ]);
-  }
-
-  function buildRow({ cat, depth }, usage, { draggable }) {
-    const count = usage.get(cat.id) || 0;
-    const colour = normaliseHex(cat.color_hex);
-
-    const nameNode = el('span', {
-      class: 'cat-name',
-      text: cat.name || '(unnamed)',
-      title: 'Click to rename',
-    });
-    nameNode.addEventListener('click', () => startInlineRename(nameNode, cat, paintList));
-
-    return el('div', {
-      class: `cat-row depth-${depth}`,
-      'data-id': cat.id,
-      'data-depth': String(depth),
-      style: `--indent:${depth * INDENT_PX}px`,
-    }, [
-      draggable
-        ? el('span', { class: 'drag-handle', text: '⠿', title: 'Drag to reorder' })
-        : el('span', { style: 'width:10px' }),
-      el('span', { class: 'cat-dot', style: `background:${colour || 'var(--border)'}` }),
-      nameNode,
-      count ? el('span', { class: 'chip', text: `${count} txn${count === 1 ? '' : 's'}` }) : null,
-      el('span', { style: 'flex:1' }),
-      el('button', {
-        class: 'btn btn-ghost btn-sm cat-action',
-        text: 'Edit',
-        onclick: () => openCategoryForm(cat, paint),
-      }),
-      el('button', {
-        class: 'btn btn-danger btn-sm cat-action',
-        text: '🗑',
-        title: 'Delete',
-        onclick: () => deleteCategory(cat, count, paint),
       }),
     ]);
   }
@@ -282,14 +507,10 @@ export function renderCategories(container) {
     const index = rows.indexOf(row);
     const depth = Number(row.dataset.depth);
 
-    // The whole subtree travels with the row: every following row deeper than
-    // this one belongs to it.
     let span = 1;
     while (index + span < rows.length && Number(rows[index + span].dataset.depth) > depth) span++;
     const group = rows.slice(index, index + span);
     const rest = rows.filter((r) => !group.includes(r));
-
-    // How much room the subtree needs below whatever it lands on.
     const deepest = group.reduce((m, r) => Math.max(m, Number(r.dataset.depth)), depth);
     const subtreeHeight = deepest - depth;
 
@@ -326,25 +547,20 @@ export function renderCategories(container) {
         else break;
       }
 
-      // Legal depth range for this drop position:
-      //  - at most one level deeper than the row above
-      //  - never so deep that the dragged subtree would exceed MAX_DEPTH
-      //  - a row landing after a deeper row may sit at any level up to that
       const above = metrics[insertAt - 1];
       const aboveDepth = above ? Number(above.el.dataset.depth) : -1;
       const maxDepth = Math.min(aboveDepth + 1, MAX_DEPTH - subtreeHeight);
       const wanted = Math.round((baseIndent + dx) / INDENT_PX);
       dropDepth = Math.max(0, Math.min(wanted, Math.max(0, maxDepth)));
 
-      // Dropping a shallower row into the middle of a deeper subtree would
-      // re-parent everything after it. Snap past those rows to a boundary.
+      // Dropping a shallower row inside a deeper subtree would re-parent the
+      // rest of it; snap past those rows to a boundary instead.
       let scan = insertAt;
       while (scan < metrics.length && Number(metrics[scan].el.dataset.depth) > dropDepth) scan++;
       insertAt = scan;
 
       group.forEach((r) => {
-        const own = Number(r.dataset.depth) - depth;
-        r.style.transform = `translate(${(dropDepth + own) * INDENT_PX - (depth + own) * INDENT_PX}px, ${dy}px)`;
+        r.style.transform = `translate(${(dropDepth - depth) * INDENT_PX}px, ${dy}px)`;
       });
       metrics.forEach((m, i) => {
         m.el.style.transform = i >= insertAt ? `translateY(${groupHeight}px)` : '';
@@ -358,7 +574,7 @@ export function renderCategories(container) {
       hint.style.top = `${e.clientY + 18}px`;
     };
 
-    const onUp = async () => {
+    const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
@@ -368,17 +584,18 @@ export function renderCategories(container) {
       group.forEach((r) => { r.classList.remove('is-dragging'); r.style.transform = ''; });
       metrics.forEach((m) => { m.el.classList.remove('is-shifting'); m.el.style.transform = ''; });
 
-      const order = [
-        ...rest.slice(0, insertAt).map((r) => r.dataset.id),
-        ...group.map((r) => r.dataset.id),
-        ...rest.slice(insertAt).map((r) => r.dataset.id),
-      ];
-      const depths = new Map(rest.map((r) => [r.dataset.id, Number(r.dataset.depth)]));
-      group.forEach((r) => {
-        depths.set(r.dataset.id, dropDepth + (Number(r.dataset.depth) - depth));
-      });
+      // Buffer only — nothing is written until Save.
+      const ids = new Set(group.map((r) => r.dataset.id));
+      const moved = working.filter((w) => ids.has(w.id));
+      const remaining = working.filter((w) => !ids.has(w.id));
+      const restIds = rest.map((r) => r.dataset.id);
+      const anchor = restIds[insertAt - 1];
+      const at = anchor ? remaining.findIndex((w) => w.id === anchor) + 1 : 0;
 
-      await persist(order, depths);
+      moved.forEach((w, i) => { w.depth = dropDepth + (i === 0 ? 0 : w.depth - depth); });
+      working = [...remaining.slice(0, at), ...moved, ...remaining.slice(at)];
+
+      paintTree();
     };
 
     window.addEventListener('pointermove', onMove);
@@ -386,100 +603,211 @@ export function renderCategories(container) {
     window.addEventListener('pointercancel', onUp);
   }
 
-  /** Name of the row that would become the parent at a given drop position. */
   function parentNameAt(metrics, insertAt, dropDepth) {
     for (let i = insertAt - 1; i >= 0; i--) {
       if (Number(metrics[i].el.dataset.depth) === dropDepth - 1) {
-        return repo.byId('Categories', metrics[i].el.dataset.id)?.name || '';
+        const id = metrics[i].el.dataset.id;
+        return renames.get(id) ?? repo.byId('Categories', id)?.name ?? '';
       }
     }
     return '';
   }
 
-  /**
-   * Walks the new flat order, derives each row's parent_id and sort_order from
-   * its depth, and saves only the rows that actually changed.
-   */
-  async function persist(order, depths) {
-    saving = true;
-    try {
-      const parentAtDepth = [];
-      const counters = new Map();
-      const updates = [];
-      let previousDepth = -1;
+  // ---------- helpers bound to this view ----------
 
-      for (const id of order) {
-        const cat = repo.byId('Categories', id);
-        if (!cat) continue;
-
-        // Can never jump more than one level deeper than the row above.
-        const depth = Math.max(0, Math.min(depths.get(id) ?? 0, previousDepth + 1, MAX_DEPTH));
-        const parentId = depth === 0 ? '' : (parentAtDepth[depth - 1] || '');
-
-        const key = parentId || '__root__';
-        const sortOrder = (counters.get(key) || 0) + 1;
-        counters.set(key, sortOrder);
-
-        parentAtDepth[depth] = id;
-        parentAtDepth.length = depth + 1;
-        previousDepth = depth;
-
-        if ((cat.parent_id || '') !== parentId || parseNum(cat.sort_order) !== sortOrder) {
-          updates.push({ ...cat, parent_id: parentId, sort_order: sortOrder });
-        }
+  function descendantIds(id) {
+    const out = [id];
+    const walk = (parent) => {
+      for (const c of repo.rows('Categories')) {
+        if (c.parent_id === parent) { out.push(c.id); walk(c.id); }
       }
-
-      if (!updates.length) return;
-      await repo.saveMany('Categories', updates);
-      toast(`Reordered — ${updates.length} updated`);
-    } catch (err) {
-      toast(err.message, { error: true });
-    } finally {
-      saving = false;
-      paintList();
-    }
+    };
+    walk(id);
+    return out;
   }
 
+  function breadcrumb(id) {
+    const parts = [];
+    let cur = repo.byId('Categories', id);
+    let guard = 0;
+    while (cur && guard++ < 5) {
+      parts.unshift(cur.name || '(unnamed)');
+      cur = cur.parent_id ? repo.byId('Categories', cur.parent_id) : null;
+    }
+    parts.pop(); // the row itself is already the title
+    return parts.length ? parts.join(' › ') : DEPTH_NAMES[0];
+  }
+
+  // Leaving the view with unsaved edits would silently lose them.
+  window.addEventListener('beforeunload', (e) => {
+    if (isDirty()) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  syncWorking();
   paint();
+}
+
+// ---------- transaction detail ----------
+
+function openTransaction(txn, onSaved) {
+  const values = {
+    amount: txn.amount ?? '',
+    category_id: txn.category_id || '',
+    transaction_date: txn.transaction_date || '',
+    notes: txn.notes || '',
+    labels: txn.labels || '',
+  };
+
+  openModal({
+    title: 'Transaction',
+    icon: '💸',
+    render: (body) => {
+      const categorySelect = el('select', {
+        class: 'select',
+        onchange: (e) => { values.category_id = e.target.value; },
+      });
+      for (const type of TYPES) {
+        const group = el('optgroup', { label: type.label });
+        const ofType = repo.rows('Categories').filter((c) => (c.type || 'expense') === type.key);
+        const live = new Map(ofType.map((c) => [c.id, c]));
+        const walk = (parentId, depth) => {
+          ofType
+            .filter((c) => (c.parent_id && live.has(c.parent_id) ? c.parent_id : '') === parentId)
+            .sort(bySortOrder)
+            .forEach((c) => {
+              group.append(el('option', {
+                value: c.id,
+                text: `${'　'.repeat(depth)}${depth ? '↳ ' : ''}${c.name || c.id}`,
+                selected: values.category_id === c.id,
+              }));
+              if (depth < MAX_DEPTH) walk(c.id, depth + 1);
+            });
+        };
+        walk('', 0);
+        if (group.children.length) categorySelect.append(group);
+      }
+
+      body.append(
+        el('div', { class: 'field-row' }, [
+          field('Amount', el('input', {
+            class: 'input',
+            type: 'number',
+            step: '0.01',
+            value: String(values.amount),
+            oninput: (e) => { values.amount = e.target.value; },
+          })),
+          field('Date & time', el('input', {
+            class: 'input',
+            type: 'datetime-local',
+            value: toDateTimeInput(values.transaction_date),
+            oninput: (e) => { values.transaction_date = e.target.value; },
+          })),
+        ]),
+        field('Category', categorySelect, {
+          hint: 'Move this transaction to any category, subcategory or sub-subcategory.',
+        }),
+        field('Notes', el('textarea', {
+          class: 'textarea',
+          text: values.notes,
+          oninput: (e) => { values.notes = e.target.value; },
+        })),
+        field('Labels', el('input', {
+          class: 'input',
+          type: 'text',
+          value: values.labels,
+          oninput: (e) => { values.labels = e.target.value; },
+        }), { hint: 'Separate with |' }),
+        el('div', { class: 'audit-note' }, [
+          el('div', { text: `Created ${fmtDateTime(txn.created_at)} by ${txn.created_by || '—'}` }),
+          el('div', { text: `Updated ${fmtDateTime(txn.updated_at)} by ${txn.updated_by || '—'}` }),
+        ]),
+      );
+    },
+    actions: (close) => {
+      const del = el('button', {
+        class: 'btn btn-danger btn-ghost',
+        text: 'Delete',
+        style: 'margin-right:auto',
+        onclick: async () => {
+          const ok = await confirmDialog({
+            title: 'Delete transaction?',
+            message: `${fmtMoney(txn.amount)}${txn.notes ? ` — "${txn.notes}"` : ''} will be marked deleted.`,
+            note: 'The row stays in the sheet and can be restored.',
+            confirmLabel: 'Delete transaction',
+          });
+          if (!ok) return;
+          try {
+            await repo.remove('Transactions', txn.id);
+            toast('Transaction deleted');
+            close();
+            onSaved?.();
+          } catch (err) { toast(err.message, { error: true }); }
+        },
+      });
+
+      const save = el('button', { class: 'btn', text: 'Save changes' });
+      save.addEventListener('click', async () => {
+        save.disabled = true;
+        save.textContent = 'Saving…';
+        try {
+          await repo.save('Transactions', {
+            ...txn,
+            amount: parseNum(values.amount),
+            category_id: values.category_id,
+            transaction_date: values.transaction_date
+              ? new Date(values.transaction_date).toISOString()
+              : txn.transaction_date,
+            notes: values.notes,
+            labels: String(values.labels || '')
+              .split('|').map((s) => s.trim()).filter(Boolean).join('|'),
+          });
+          toast('Transaction saved');
+          close();
+          onSaved?.();
+        } catch (err) {
+          save.disabled = false;
+          save.textContent = 'Save changes';
+          toast(err.message, { error: true });
+        }
+      });
+
+      return [del, el('button', { class: 'btn btn-ghost', text: 'Cancel', onclick: close }), save];
+    },
+  });
 }
 
 // ---------- inline rename ----------
 
-function startInlineRename(node, cat, refresh) {
-  const original = cat.name || '';
+function startInlineRename(node, id, current, commit) {
   const input = el('input', {
     class: 'input',
     type: 'text',
-    value: original,
-    style: 'max-width:260px;padding:4px 8px',
+    value: current,
+    style: 'max-width:220px;padding:4px 8px',
   });
   node.replaceWith(input);
   input.focus();
   input.select();
+  input.addEventListener('click', (e) => e.stopPropagation());
 
   let done = false;
-  const finish = async (commit) => {
+  const finish = (ok) => {
     if (done) return;
     done = true;
     const value = input.value.trim();
-    if (!commit || !value || value === original) return refresh();
-    try {
-      await repo.save('Categories', { ...cat, name: value });
-      toast('Renamed');
-    } catch (err) {
-      toast(err.message, { error: true });
-    }
-    refresh();
+    if (ok && value && value !== current) commit(value);
+    else commit(current);
   };
 
   input.addEventListener('blur', () => finish(true));
   input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
     if (e.key === 'Enter') { e.preventDefault(); finish(true); }
     if (e.key === 'Escape') { e.preventDefault(); finish(false); }
   });
 }
 
-// ---------- form ----------
+// ---------- category form ----------
 
 function openCategoryForm(cat, onSaved) {
   const isEdit = Boolean(cat.id);
@@ -494,6 +822,7 @@ function openCategoryForm(cat, onSaved) {
 
   openModal({
     title: isEdit ? 'Edit category' : 'New category',
+    icon: '🏷',
     render: (body) => {
       const hexInput = el('input', {
         class: 'input',
@@ -513,14 +842,10 @@ function openCategoryForm(cat, onSaved) {
         onchange: (e) => { values.parent_id = e.target.value; },
       });
 
-      // Descendants can't become their own ancestor's parent.
       const descendants = new Set();
       const collect = (id) => {
         for (const c of repo.rows('Categories')) {
-          if (c.parent_id === id && !descendants.has(c.id)) {
-            descendants.add(c.id);
-            collect(c.id);
-          }
+          if (c.parent_id === id && !descendants.has(c.id)) { descendants.add(c.id); collect(c.id); }
         }
       };
       if (isEdit) collect(cat.id);
@@ -528,25 +853,20 @@ function openCategoryForm(cat, onSaved) {
       const rebuildParents = () => {
         clear(parentSelect);
         parentSelect.append(el('option', { value: '', text: '— top level —' }));
-        const rowsOfType = repo.rows('Categories').filter((c) => (c.type || 'expense') === values.type);
-        const live = new Map(rowsOfType.map((c) => [c.id, c]));
-        // Orphans aren't in the tree, so offering them as parents would just
-        // hide whatever gets moved under one.
-        const inTree = rowsOfType.filter((c) => !c.parent_id || live.has(c.parent_id));
+        const ofType = repo.rows('Categories').filter((c) => (c.type || 'expense') === values.type);
+        const live = new Map(ofType.map((c) => [c.id, c]));
+        const inTree = ofType.filter((c) => !c.parent_id || live.has(c.parent_id));
         const walk = (parentId, depth) => {
-          inTree
-            .filter((c) => (c.parent_id || '') === parentId)
-            .sort(bySortOrder)
-            .forEach((c) => {
-              if (c.id !== cat.id && !descendants.has(c.id) && depth < MAX_DEPTH) {
-                parentSelect.append(el('option', {
-                  value: c.id,
-                  text: `${'　'.repeat(depth)}${depth ? '↳ ' : ''}${c.name || c.id}`,
-                  selected: values.parent_id === c.id,
-                }));
-              }
-              if (depth < MAX_DEPTH) walk(c.id, depth + 1);
-            });
+          inTree.filter((c) => (c.parent_id || '') === parentId).sort(bySortOrder).forEach((c) => {
+            if (c.id !== cat.id && !descendants.has(c.id) && depth < MAX_DEPTH) {
+              parentSelect.append(el('option', {
+                value: c.id,
+                text: `${'　'.repeat(depth)}${depth ? '↳ ' : ''}${c.name || c.id}`,
+                selected: values.parent_id === c.id,
+              }));
+            }
+            if (depth < MAX_DEPTH) walk(c.id, depth + 1);
+          });
         };
         walk('', 0);
       };
@@ -560,7 +880,6 @@ function openCategoryForm(cat, onSaved) {
           placeholder: 'e.g. Groceries',
           oninput: (e) => { values.name = e.target.value; },
         }), { required: true, error: errorNode }),
-
         el('div', { class: 'field-row' }, [
           field('Type', el('select', {
             class: 'select',
@@ -570,11 +889,7 @@ function openCategoryForm(cat, onSaved) {
           })))),
           field('Colour', el('div', { class: 'colour-field' }, [swatch, hexInput])),
         ]),
-
-        field('Parent', parentSelect, {
-          hint: 'Leave as top level to make this a main category.',
-        }),
-
+        field('Parent', parentSelect, { hint: 'Leave as top level for a main category.' }),
         field('Icon key', el('input', {
           class: 'input',
           type: 'text',
@@ -608,8 +923,6 @@ function openCategoryForm(cat, onSaved) {
               : nextSortOrder(values.parent_id, values.type),
           });
 
-          // A category switching expense<->income takes its whole subtree with
-          // it, or the descendants end up in a tab their parent isn't in.
           if (typeChanged) {
             const moved = [];
             const cascade = (id) => {
@@ -697,7 +1010,7 @@ async function deleteCategory(cat, txnCount, refresh) {
   }
 }
 
-// ---------- helpers ----------
+// ---------- shared helpers ----------
 
 function bySortOrder(a, b) {
   const d = parseNum(a.sort_order) - parseNum(b.sort_order);
@@ -720,7 +1033,6 @@ function nextSortOrder(parentId, type) {
   return siblings.reduce((max, c) => Math.max(max, parseNum(c.sort_order)), 0) + 1;
 }
 
-/** Accepts '#4CAF50', '4CAF50' or ''; returns '#4caf50' or ''. */
 function normaliseHex(v) {
   const s = String(v || '').trim();
   if (!s) return '';

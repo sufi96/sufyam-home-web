@@ -387,6 +387,170 @@ td.actions { text-align: right; white-space: nowrap; }
   font-size: 12px;
 }
 
+/* ---------- Split layout ---------- */
+
+.cat-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+@media (max-width: 1080px) {
+  .cat-split { grid-template-columns: minmax(0, 1fr); }
+}
+
+.pane { min-width: 0; }
+
+.cat-row.is-selected {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.cat-row.is-selected .cat-name { color: var(--accent); }
+
+/* ---------- Save bar ---------- */
+
+.save-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  margin-bottom: 12px;
+  border-radius: 9px;
+  background: var(--warn-soft);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  position: sticky;
+  top: 66px;
+  z-index: 15;
+  animation: slide-in .16s ease-out;
+}
+
+.save-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  flex: 0 0 auto;
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes pulse { 50% { opacity: .35; } }
+
+.save-text { font-size: 13px; font-weight: 560; color: var(--text); }
+
+/* ---------- Detail pane ---------- */
+
+.detail-card { padding: 0; overflow: hidden; }
+.detail-empty { display: flex; align-items: center; justify-content: center; min-height: 260px; }
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-title {
+  font-size: 17px;
+  font-weight: 660;
+  letter-spacing: -.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-crumb { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+.detail-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-stats > div { background: var(--surface); padding: 14px 20px; }
+
+.detail-stat-value {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-stat-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-top: 3px;
+}
+
+.rollup-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 20px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ---------- Transaction list ---------- */
+
+.txn-list { max-height: 460px; overflow-y: auto; }
+
+.txn-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background .12s ease;
+}
+
+.txn-row:last-child { border-bottom: 0; }
+.txn-row:hover { background: var(--surface-2); }
+
+.txn-main { flex: 1; min-width: 0; }
+
+.txn-note {
+  font-weight: 550;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.txn-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.txn-amount {
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.audit-note {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.7;
+}
+
 /* ---------- Orphan recovery ---------- */
 
 .orphan-card {
