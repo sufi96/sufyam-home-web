@@ -15,7 +15,10 @@
 // of the way. Depth comes from horizontal position, the way outliners do it.
 
 import * as repo from '../repo.js';
+import * as taxonomy from '../taxonomy.js';
 import { parseNum } from '../schema.js';
+import { iconEl, isKnownIcon } from '../icons.js';
+import { iconPicker, labelPicker } from './pickers.js';
 import {
   el, clear, toast, openModal, confirmDialog, emptyState,
   fmtMoney, fmtDate, fmtDateTime, toDateTimeInput,
@@ -36,6 +39,8 @@ export function renderCategories(container) {
   let saving = false;
   let selectedId = null;
   let rollUp = true; // include descendants' transactions in the right pane
+  let sortKey = localStorage.getItem('sufyam.txn.sort') || 'date';
+  let sortDir = localStorage.getItem('sufyam.txn.dir') || 'desc';
 
   // Buffered edits: the tree as the user has arranged it, plus renames.
   let working = [];              // [{ id, depth }]
@@ -295,7 +300,7 @@ export function renderCategories(container) {
       draggable
         ? el('span', { class: 'drag-handle', text: '⠿', title: 'Drag to reorder' })
         : el('span', { style: 'width:10px' }),
-      el('span', { class: 'cat-dot', style: `background:${normaliseHex(cat.color_hex) || 'var(--border)'}` }),
+      categoryBadge(cat),
       nameNode,
       count ? el('span', {
         class: 'chip',
@@ -329,6 +334,7 @@ export function renderCategories(container) {
     clear(detailPane);
 
     if (!selectedId) {
+      detailPane.append(sortToolbar(0, { disabled: true }));
       detailPane.append(el('div', { class: 'card detail-empty' }, [
         emptyState('👈', 'Select a category to see its transactions.'),
       ]));
@@ -343,19 +349,20 @@ export function renderCategories(container) {
 
     const ids = rollUp ? descendantIds(selectedId) : [selectedId];
     const idSet = new Set(ids);
+    const dir = sortDir === 'asc' ? 1 : -1;
     const txns = repo.rows('Transactions')
       .filter((t) => idSet.has(t.category_id))
-      .sort((a, b) => String(b.transaction_date).localeCompare(String(a.transaction_date)));
+      .sort((a, b) => (sortKey === 'amount'
+        ? (parseNum(a.amount) - parseNum(b.amount)) * dir
+        : String(a.transaction_date).localeCompare(String(b.transaction_date)) * dir));
 
     const total = txns.reduce((s, t) => s + parseNum(t.amount), 0);
     const hasChildren = descendantIds(selectedId).length > 1;
 
+    detailPane.append(sortToolbar(txns.length));
     detailPane.append(el('div', { class: 'card detail-card' }, [
       el('div', { class: 'detail-head' }, [
-        el('span', {
-          class: 'cat-dot',
-          style: `background:${normaliseHex(cat.color_hex) || 'var(--border)'};width:14px;height:14px`,
-        }),
+        categoryBadge(cat, 36),
         el('div', { style: 'min-width:0;flex:1' }, [
           el('div', { class: 'detail-title', text: cat.name || '(unnamed)' }),
           el('div', { class: 'detail-crumb', text: breadcrumb(selectedId) }),
@@ -404,26 +411,84 @@ export function renderCategories(container) {
     ]));
   }
 
+  /** Sort controls, sized to line up with the tree toolbar opposite it. */
+  function sortToolbar(count, { disabled = false } = {}) {
+    const button = (key, label) => el('button', {
+      class: `segmented-btn${sortKey === key ? ' is-active' : ''}`,
+      disabled: disabled || null,
+      onclick: () => {
+        if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+        else { sortKey = key; sortDir = 'desc'; }
+        localStorage.setItem('sufyam.txn.sort', sortKey);
+        localStorage.setItem('sufyam.txn.dir', sortDir);
+        paintDetail();
+      },
+    }, [
+      label,
+      sortKey === key
+        ? el('span', { class: 'sort-arrow', text: sortDir === 'asc' ? '↑' : '↓' })
+        : null,
+    ]);
+
+    return el('div', { class: 'toolbar' }, [
+      el('span', { class: 'pane-title', text: 'Transactions' }),
+      count ? el('span', { class: 'pane-count', text: String(count) }) : null,
+      el('div', { class: 'spacer' }),
+      el('span', { class: 'sort-label', text: 'Sort' }),
+      el('div', { class: 'segmented' }, [button('date', 'Date'), button('amount', 'Amount')]),
+    ]);
+  }
+
+  /**
+   * Transaction row: amount and date lead, because those are what you scan
+   * for. The note is secondary, and the parent category is visually distinct
+   * from labels — merging them made it unclear which was which.
+   */
   function buildTxnRow(txn, selectedCat) {
     const cat = repo.byId('Categories', txn.category_id);
     const labels = String(txn.labels || '').split('|').map((s) => s.trim()).filter(Boolean);
+    const foreign = cat && cat.id !== selectedCat.id;
 
     return el('div', {
       class: 'txn-row',
       onclick: () => openTransaction(txn, afterWrite),
     }, [
-      el('div', { class: 'txn-main' }, [
-        el('div', { class: 'txn-note', text: txn.notes || '(no note)' }),
-        el('div', { class: 'txn-meta' }, [
-          el('span', { text: fmtDate(txn.transaction_date) }),
-          cat && cat.id !== selectedCat.id
-            ? el('span', { class: 'chip', text: cat.name || '' })
-            : null,
-          ...labels.map((l) => el('span', { class: 'chip', text: l })),
-        ]),
+      el('div', { class: 'txn-lead' }, [
+        el('div', { class: 'txn-amount', text: fmtMoney(txn.amount) }),
+        el('div', { class: 'txn-date', text: fmtDate(txn.transaction_date) }),
       ]),
-      el('div', { class: 'txn-amount', text: fmtMoney(txn.amount) }),
+      el('div', { class: 'txn-body' }, [
+        el('div', { class: 'txn-top' }, [
+          foreign
+            ? el('span', { class: 'txn-cat' }, [
+                iconEl(cat.icon_key, { size: 13 }),
+                cat.name || '',
+              ])
+            : null,
+          txn.notes
+            ? el('span', { class: 'txn-note', text: txn.notes })
+            : el('span', { class: 'txn-note is-empty', text: 'No note' }),
+        ]),
+        labels.length
+          ? el('div', { class: 'txn-labels' }, labels.map((l) => el('span', {
+              class: 'chip chip-label',
+              text: l,
+            })))
+          : null,
+      ]),
+      el('span', { class: 'micon txn-chevron', text: 'chevron_right' }),
     ]);
+  }
+
+  /** Coloured icon badge used everywhere a category is shown. */
+  function categoryBadge(cat, size = 26) {
+    const colour = normaliseHex(cat.color_hex);
+    return el('span', {
+      class: 'cat-badge',
+      style: `width:${size}px;height:${size}px;`
+        + `background:${colour ? `color-mix(in srgb, ${colour} 18%, transparent)` : 'var(--surface-2)'};`
+        + `color:${colour || 'var(--text-dim)'}`,
+    }, [iconEl(cat.icon_key, { size: Math.round(size * 0.62) })]);
   }
 
   // ---------- orphans ----------
@@ -706,17 +771,15 @@ function openTransaction(txn, onSaved) {
         field('Category', categorySelect, {
           hint: 'Move this transaction to any category, subcategory or sub-subcategory.',
         }),
+        field('Labels', labelPicker(values.labels, (names) => {
+          values.labels = names.join('|');
+        })),
         field('Notes', el('textarea', {
           class: 'textarea',
           text: values.notes,
+          placeholder: 'Optional',
           oninput: (e) => { values.notes = e.target.value; },
         })),
-        field('Labels', el('input', {
-          class: 'input',
-          type: 'text',
-          value: values.labels,
-          oninput: (e) => { values.labels = e.target.value; },
-        }), { hint: 'Separate with |' }),
         el('div', { class: 'audit-note' }, [
           el('div', { text: `Created ${fmtDateTime(txn.created_at)} by ${txn.created_by || '—'}` }),
           el('div', { text: `Updated ${fmtDateTime(txn.updated_at)} by ${txn.updated_by || '—'}` }),
@@ -761,7 +824,15 @@ function openTransaction(txn, onSaved) {
             labels: String(values.labels || '')
               .split('|').map((s) => s.trim()).filter(Boolean).join('|'),
           });
-          toast('Transaction saved');
+          // Anything typed into the picker joins the shared data bank, so the
+          // next transaction (and the phone) offers it as a choice.
+          const banked = await taxonomy.ensure(
+            taxonomy.KIND_LABEL,
+            String(values.labels || '').split('|'),
+          );
+          toast(banked.length
+            ? `Transaction saved · ${banked.length} new label${banked.length === 1 ? '' : 's'} banked`
+            : 'Transaction saved');
           close();
           onSaved?.();
         } catch (err) {
@@ -890,13 +961,11 @@ function openCategoryForm(cat, onSaved) {
           field('Colour', el('div', { class: 'colour-field' }, [swatch, hexInput])),
         ]),
         field('Parent', parentSelect, { hint: 'Leave as top level for a main category.' }),
-        field('Icon key', el('input', {
-          class: 'input',
-          type: 'text',
-          value: values.icon_key,
-          placeholder: 'e.g. cart, fuel, home',
-          oninput: (e) => { values.icon_key = e.target.value; },
-        }), { hint: 'Optional — matches the icon name used by the phone app.' }),
+        field('Icon', iconPicker(values.icon_key, (key) => { values.icon_key = key; }), {
+          hint: isKnownIcon(values.icon_key) || !values.icon_key
+            ? 'The same icon set the phone app uses.'
+            : `"${values.icon_key}" isn't a known icon key — the phone shows a fallback. Pick one below.`,
+        }),
       );
     },
     actions: (close) => {
