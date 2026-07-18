@@ -213,6 +213,91 @@ body {
 
 .chart-wrap { position: relative; height: 260px; }
 
+/* The multi-line trend gets the full page width — comparing categories over
+   time is the thing a wide screen can show that the phone's layout cannot. */
+.chart-wide { height: 340px; }
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.card-head .card-title { flex: 1; }
+
+/* ---------- Period bar ---------- */
+
+.period-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.period-label { min-width: 160px; text-align: center; }
+.period-month { font-size: 15px; font-weight: 660; letter-spacing: -.01em; }
+.period-sub { font-size: 11px; color: var(--text-dim); min-height: 14px; }
+
+/* ---------- Ranked bars ---------- */
+
+.ranked-row { padding: 7px 0; }
+
+.ranked-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 5px;
+}
+
+.ranked-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranked-value { font-size: 13px; font-weight: 640; font-variant-numeric: tabular-nums; }
+
+.ranked-track {
+  height: 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.ranked-fill { height: 100%; border-radius: 6px; transition: width .3s ease; }
+
+/* ---------- Compact list rows ---------- */
+
+.mini-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.mini-row:last-child { border-bottom: 0; }
+
+.mini-title {
+  font-weight: 560;
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mini-sub { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+.mini-amount { font-weight: 640; font-variant-numeric: tabular-nums; font-size: 13.5px; }
+
 /* ---------- Toolbar ---------- */
 
 .toolbar {
