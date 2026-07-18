@@ -157,6 +157,42 @@ export async function getAccessToken() {
   return requestToken({ silent: true });
 }
 
+/**
+ * True when the next API call would need Google's sign-in popup.
+ *
+ * Deliberately synchronous. Callers check this at the very top of a click
+ * handler, *before* any await, so the popup can be opened while the browser
+ * still counts the click as user activation. Opening it after an await — which
+ * is what happens if you let a save discover the expiry mid-flight — gets it
+ * blocked, and a blocked popup means the save fails.
+ */
+export function needsInteractiveAuth() {
+  return !accessToken || Date.now() >= tokenExpiry;
+}
+
+/** Milliseconds until the current token expires (0 if there isn't one). */
+export function tokenLifetimeLeft() {
+  return accessToken ? Math.max(0, tokenExpiry - Date.now()) : 0;
+}
+
+/**
+ * Keeps the token warm in the background so it rarely expires while the user
+ * is mid-edit. Silent refresh is best-effort: if the browser blocks it (third
+ * party cookies), the interactive path still covers it.
+ */
+export function startTokenRefresh() {
+  const REFRESH_BEFORE = 5 * 60 * 1000;
+  setInterval(async () => {
+    if (!accessToken) return;
+    if (tokenExpiry - Date.now() > REFRESH_BEFORE) return;
+    try {
+      await requestToken({ silent: true });
+    } catch {
+      // Left for the interactive path to handle on the next action.
+    }
+  }, 60 * 1000);
+}
+
 export async function signIn() {
   const token = await requestToken({ silent: false });
   await fetchUserEmail();

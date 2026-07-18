@@ -2,7 +2,9 @@
 
 import { TABS } from './schema.js';
 import { isConfigured } from './config.js';
-import { trySilentSignIn, getAuthState, onAuthChange, signIn } from './auth.js';
+import {
+  trySilentSignIn, getAuthState, onAuthChange, signIn, startTokenRefresh,
+} from './auth.js';
 import * as repo from './repo.js';
 import { renderEntity } from './views/entity.js';
 import { renderCategories } from './views/categories.js';
@@ -212,6 +214,7 @@ document.getElementById('btn-menu').addEventListener('click', () => {
 });
 
 onAuthChange(updateAccount);
+startTokenRefresh();
 repo.onDataChange(updateSyncStatus);
 
 window.addEventListener('hashchange', () => {

@@ -16,6 +16,7 @@
 
 import * as repo from '../repo.js';
 import * as taxonomy from '../taxonomy.js';
+import { needsInteractiveAuth, signIn } from '../auth.js';
 import { parseNum } from '../schema.js';
 import { iconEl, isKnownIcon } from '../icons.js';
 import { iconPicker, labelPicker } from './pickers.js';
@@ -52,6 +53,60 @@ export function renderCategories(container) {
   const treePane = el('div', { class: 'pane' });
   const detailPane = el('div', { class: 'pane' });
 
+  // Unsaved arrangement survives a reload. Without this, anything that
+  // interrupts a save — a blocked popup, a dropped connection, an accidental
+  // refresh — meant redoing the whole rearrangement from scratch.
+  const PENDING_KEY = 'sufyam.cat.pending';
+
+  function persistWorking() {
+    if (!isDirty()) {
+      localStorage.removeItem(PENDING_KEY);
+      return;
+    }
+    try {
+      localStorage.setItem(PENDING_KEY, JSON.stringify({
+        working,
+        renames: [...renames],
+        savedAt: Date.now(),
+      }));
+    } catch {
+      // Storage unavailable; the in-memory buffer still works this session.
+    }
+  }
+
+  /** Restores a buffer only if every row in it still exists in the sheet. */
+  function restoreWorking() {
+    let stored;
+    try {
+      stored = JSON.parse(localStorage.getItem(PENDING_KEY) || 'null');
+    } catch {
+      return false;
+    }
+    if (!stored?.working?.length) return false;
+
+    const liveIds = new Set(repo.rows('Categories').map((c) => c.id));
+    const kept = stored.working.filter((w) => liveIds.has(w.id));
+    // A row vanishing (deleted on the phone, say) means the arrangement no
+    // longer describes reality — safer to drop the buffer than to write a
+    // guess over whatever the sheet now holds.
+    if (kept.length !== stored.working.length) {
+      localStorage.removeItem(PENDING_KEY);
+      return false;
+    }
+    const missing = [...liveIds].filter((id) => !kept.some((w) => w.id === id));
+    if (missing.length) {
+      localStorage.removeItem(PENDING_KEY);
+      return false;
+    }
+
+    working = kept;
+    renames = new Map((stored.renames || []).filter(([id]) => liveIds.has(id)));
+    return isDirty();
+  }
+
+  // Note: this does NOT clear the stored buffer — restoreWorking() runs after
+  // it during startup and would find nothing left to restore. persistWorking()
+  // drops the key on the next repaint once nothing is dirty.
   function syncWorking() {
     working = buildTree().flat.map(({ cat, depth }) => ({ id: cat.id, depth }));
     renames = new Map();
@@ -128,6 +183,21 @@ export function renderCategories(container) {
   async function flush() {
     const dirty = dirtyRows();
     if (!dirty.length) return true;
+
+    // Google's sign-in popup must be opened while the browser still regards
+    // the triggering click as user activation. Discovering an expired token
+    // *inside* the save — after the first await — means the popup opens
+    // unattached to a gesture and gets blocked, which is what made saves fail
+    // and left the buffer stranded.
+    if (needsInteractiveAuth()) {
+      try {
+        await signIn();
+      } catch {
+        toast('Sign-in needed before saving — click Save again', { error: true });
+        return false;
+      }
+    }
+
     saving = true;
     paintTree();
     try {
@@ -136,7 +206,9 @@ export function renderCategories(container) {
       syncWorking();
       return true;
     } catch (err) {
-      toast(err.message, { error: true });
+      // The buffer is deliberately left intact so a failed save can simply be
+      // retried; nothing the user arranged is thrown away.
+      toast(`${err.message} — your changes are still here, try Save again`, { error: true });
       return false;
     } finally {
       saving = false;
@@ -167,6 +239,8 @@ export function renderCategories(container) {
     const usage = usageCounts();
     const filtering = Boolean(query);
     const dirty = dirtyRows();
+
+    persistWorking();
 
     treePane.append(el('div', { class: 'toolbar' }, [
       el('span', { class: 'pane-title', text: 'Categories' }),
@@ -277,8 +351,12 @@ export function renderCategories(container) {
     // to whichever of black/white actually reads on it. Indentation and weight
     // alone weren't enough to separate three levels at a glance.
     const colour = normaliseHex(cat.color_hex) || '#7a8794';
+    const fg = contrastOn(colour);
     const tint = shownDepth === 0
-      ? `--row-bg:${colour};--row-fg:${contrastOn(colour)};--row-accent:${colour};`
+      ? `--row-bg:${colour};--row-fg:${fg};--row-accent:${colour};`
+        // Hover mixes toward the text colour: a dark row lightens, a pale row
+        // darkens. Brightening both ways left pale rows looking unhovered.
+        + `--row-hover:color-mix(in srgb, ${colour} 88%, ${fg});`
       : `--row-bg:color-mix(in srgb, ${colour} ${shownDepth === 1 ? 15 : 7}%, var(--surface));`
         + `--row-fg:var(--text);--row-accent:${colour};`;
 
@@ -926,6 +1004,9 @@ export function renderCategories(container) {
   });
 
   syncWorking();
+  if (restoreWorking()) {
+    toast('Restored unsaved category changes');
+  }
   paint();
 }
 

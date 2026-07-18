@@ -356,7 +356,7 @@ td.actions { text-align: right; white-space: nowrap; }
 .cat-row.depth-0 .drag-handle,
 .cat-row.depth-0 .cat-action { color: var(--row-fg); }
 .cat-row.depth-0 .btn-ghost { border-color: color-mix(in srgb, var(--row-fg) 35%, transparent); }
-.cat-row.depth-0:hover { filter: brightness(1.06); }
+.cat-row.depth-0:hover { background: var(--row-hover, var(--row-bg)); }
 
 .cat-row.depth-1 { margin-top: 2px; }
 .cat-row.depth-1 .cat-name { font-weight: 570; }
