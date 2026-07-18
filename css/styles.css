@@ -1584,10 +1584,12 @@ td.actions { text-align: right; white-space: nowrap; }
   font-size: 13px;
   color: var(--text-dim);
   line-height: 1.55;
-  white-space: pre-wrap;
+  /* pre-line keeps the paragraph breaks the note was written with, while
+     still collapsing the incidental whitespace that markup leaves behind. */
+  white-space: pre-line;
   overflow: hidden;
   display: -webkit-box;
-  -webkit-line-clamp: 5;
+  -webkit-line-clamp: 6;
   -webkit-box-orient: vertical;
 }
 
@@ -1609,21 +1611,37 @@ td.actions { text-align: right; white-space: nowrap; }
 
 .note-progress-text { font-size: 11px; color: var(--text-dim); }
 
-.note-checks { display: flex; flex-direction: column; gap: 3px; }
+/* Static checklist preview — see docs on previewBlock for why it isn't live. */
+.preview-checks { display: flex; flex-direction: column; gap: 2px; }
 
-.note-check {
+.preview-check {
   display: flex;
   align-items: flex-start;
-  gap: 7px;
-  font-size: 13px;
-  cursor: pointer;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.45;
 }
 
-.note-check input { margin-top: 2px; accent-color: var(--accent); flex: 0 0 auto; }
-.note-check-text { line-height: 1.4; }
-.note-check.is-done .note-check-text { text-decoration: line-through; opacity: .5; }
+.preview-check-box { font-size: 15px; flex: 0 0 auto; opacity: .55; margin-top: 1px; }
+.preview-check.is-done .preview-check-box { color: var(--accent); opacity: 1; }
 
-.note-more { font-size: 11.5px; color: var(--text-dim); padding-left: 22px; }
+.preview-check-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-check.is-done .preview-check-text { text-decoration: line-through; opacity: .6; }
+
+.preview-more {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  opacity: .8;
+  padding-left: 21px;
+  margin-top: 2px;
+  font-style: italic;
+}
 .note-labels { display: flex; flex-wrap: wrap; gap: 4px; }
 
 /* ---------- Note editor ---------- */
@@ -1877,14 +1895,30 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
 .note-table-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   align-self: flex-start;
-  padding: 3px 9px;
+  max-width: 100%;
+  padding: 4px 10px;
   border-radius: 6px;
   background: var(--surface-2);
   color: var(--text-dim);
   font-size: 11.5px;
   font-weight: 550;
+}
+
+.note-table-chip-title {
+  font-weight: 640;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-table-chip-size {
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
 }
 
 .notes-section-head { border-left: 3px solid var(--section-accent, var(--border)); }
@@ -2047,4 +2081,32 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
   flex-wrap: wrap;
   gap: 5px;
   margin-top: 16px;
+}
+
+
+/* ---------- Table titles ---------- */
+
+.table-title {
+  margin-bottom: 8px;
+  font-weight: 620;
+  border-style: dashed;
+}
+
+.table-title:focus { border-style: solid; }
+
+.block-title {
+  font-size: 12px;
+  font-weight: 620;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 45%;
+}
+
+.view-table-title {
+  font-size: 13.5px;
+  font-weight: 660;
+  margin-bottom: 6px;
+  color: var(--text);
 }

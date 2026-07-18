@@ -173,10 +173,7 @@ export function renderNotes(container) {
     return el('div', {
       class: 'note-card',
       style: accent ? `--note-accent:${accent};--note-tint:color-mix(in srgb, ${accent} 7%, var(--surface))` : '',
-      onclick: (e) => {
-        if (e.target.closest('.note-check')) return;
-        openNoteViewer(note, { onChanged: paint, onToggle: queueSave });
-      },
+      onclick: () => openNoteViewer(note, { onChanged: paint, onToggle: queueSave }),
     }, [
       el('div', { class: 'note-card-head' }, [
         el('span', { class: 'note-title', text: note.title || '(untitled)' }),
@@ -197,7 +194,7 @@ export function renderNotes(container) {
           ])
         : null,
 
-      el('div', { class: 'note-preview' }, blocks.slice(0, 4).map((b) => previewBlock(b, note))),
+      el('div', { class: 'note-preview' }, blocks.slice(0, 4).map(previewBlock)),
 
       labels.length
         ? el('div', { class: 'note-labels' }, labels.map((l) => el('span', {
@@ -207,35 +204,40 @@ export function renderNotes(container) {
     ]);
   }
 
-  function previewBlock(block, note) {
+  /**
+   * Card previews are read-only summaries. Checkboxes used to be live here,
+   * but a card is something you scan — mis-ticking an item while trying to
+   * open a note is worse than the shortcut was worth. Ticking lives in the
+   * viewer now.
+   */
+  function previewBlock(block) {
     if (block.type === 'checklist') {
-      return el('div', { class: 'note-checks' }, block.items.slice(0, 5).map((item, i) => el('label', {
-        class: `note-check${item.done ? ' is-done' : ''}`,
-      }, [
-        el('input', {
-          type: 'checkbox',
-          checked: item.done || null,
-          onclick: (e) => {
-            e.stopPropagation();
-            // Mutate the cached row so the card stays responsive, then let the
-            // debounced batch carry it to the sheet.
-            const blocks = parseBlocks(note.content);
-            const target = blocks.find((b) => b.id === block.id);
-            if (!target) return;
-            target.items[i].done = e.target.checked;
-            note.content = serializeBlocks(blocks);
-            queueSave({ ...note });
-            paint();
-          },
-        }),
-        el('span', { class: 'note-check-text', text: item.text || '(blank)' }),
-      ])));
+      const shown = block.items.slice(0, 4);
+      const extra = block.items.length - shown.length;
+      return el('div', { class: 'preview-checks' }, [
+        ...shown.map((item) => el('div', {
+          class: `preview-check${item.done ? ' is-done' : ''}`,
+        }, [
+          el('span', {
+            class: 'micon preview-check-box',
+            text: item.done ? 'check_box' : 'check_box_outline_blank',
+          }),
+          el('span', { class: 'preview-check-text', text: item.text || '(blank)' }),
+        ])),
+        extra > 0
+          ? el('div', { class: 'preview-more', text: `+${extra} more item${extra === 1 ? '' : 's'}` })
+          : null,
+      ]);
     }
 
     if (block.type === 'table') {
       return el('div', { class: 'note-table-chip' }, [
         el('span', { class: 'micon', style: 'font-size:15px', text: 'table_chart' }),
-        `Table · ${block.columns.length} × ${block.rows.length}`,
+        el('span', { class: 'note-table-chip-title', text: block.title || 'Table' }),
+        el('span', {
+          class: 'note-table-chip-size',
+          text: `${block.columns.length} × ${block.rows.length}`,
+        }),
       ]);
     }
 
@@ -763,10 +765,14 @@ function viewBlock(block, note, onChange) {
   }
 
   if (block.type === 'table') {
-    return el('div', { class: 'table-scroll' }, [
-      el('table', { class: 'note-table is-view' }, [
-        el('thead', {}, [el('tr', {}, block.columns.map((c) => el('th', { text: c })))]),
-        el('tbody', {}, block.rows.map((row) => el('tr', {}, row.map((cell) => el('td', { text: cell }))))),
+    return el('div', {}, [
+      block.title ? el('div', { class: 'view-table-title', text: block.title }) : null,
+      el('div', { class: 'table-scroll' }, [
+        el('table', { class: 'note-table is-view' }, [
+          el('thead', {}, [el('tr', {}, block.columns.map((c) => el('th', { text: c })))]),
+          el('tbody', {}, block.rows.map((row) => el('tr', {},
+            row.map((cell) => el('td', { text: cell }))))),
+        ]),
       ]),
     ]);
   }
@@ -810,6 +816,9 @@ function blockEditor(block, { index, total, onMove, onRemove }) {
   const head = el('div', { class: 'block-head' }, [
     el('span', { class: 'micon block-icon', text: meta.icon }),
     el('span', { class: 'block-kind', text: meta.label }),
+    block.type === 'table' && block.title
+      ? el('span', { class: 'block-title', text: block.title })
+      : null,
     el('div', { style: 'flex:1' }),
     el('button', {
       type: 'button', class: 'btn btn-ghost btn-sm', title: 'Move up',
@@ -901,6 +910,15 @@ function tableEditor(block) {
 
   const render = () => {
     clear(host);
+
+    // Named tables so a note holding several of them stays navigable.
+    host.append(el('input', {
+      class: 'input table-title',
+      type: 'text',
+      value: block.title || '',
+      placeholder: 'Table title (optional)',
+      oninput: (e) => { block.title = e.target.value; },
+    }));
 
     const head = el('tr', {}, [
       ...block.columns.map((col, c) => el('th', {}, [

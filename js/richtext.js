@@ -70,10 +70,44 @@ function cleanNode(node) {
   return clean;
 }
 
-/** Plain text of some stored HTML, for card previews and search. */
+// Elements that imply a line break when flattening markup to text.
+const BLOCK_TAGS = new Set(['p', 'div', 'h1', 'h2', 'h3', 'ul', 'ol', 'li', 'blockquote', 'pre']);
+
+/**
+ * Plain text of some stored HTML, for card previews and search.
+ *
+ * textContent alone runs every paragraph together into a single line, which is
+ * what made a multi-paragraph note preview as a wall of text. This walks the
+ * tree and emits a newline wherever the markup implies one.
+ */
 export function htmlToText(html) {
   const doc = new DOMParser().parseFromString(`<body>${html || ''}</body>`, 'text/html');
-  return (doc.body.textContent || '').replace(/\s+\n/g, '\n').trim();
+  let out = '';
+
+  const walk = (node) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        out += child.nodeValue;
+        continue;
+      }
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
+
+      const tag = child.tagName.toLowerCase();
+      if (tag === 'br') { out += '\n'; continue; }
+
+      const isBlock = BLOCK_TAGS.has(tag);
+      if (isBlock && out && !out.endsWith('\n')) out += '\n';
+      if (tag === 'li') out += '• ';
+      walk(child);
+      if (isBlock && !out.endsWith('\n')) out += '\n';
+    }
+  };
+  walk(doc.body);
+
+  return out
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 export function isBlankHtml(html) {

@@ -27,8 +27,8 @@ export function checklistBlock(items = [{ text: '', done: false }]) {
   return { id: newId(), type: 'checklist', items };
 }
 
-export function tableBlock(columns = ['Column 1', 'Column 2'], rows = [['', '']]) {
-  return { id: newId(), type: 'table', columns, rows };
+export function tableBlock(columns = ['Column 1', 'Column 2'], rows = [['', '']], title = '') {
+  return { id: newId(), type: 'table', title, columns, rows };
 }
 
 export function blankBlock(type) {
@@ -93,7 +93,13 @@ function normaliseBlock(block) {
         while (cells.length < width) cells.push('');
         return cells.slice(0, width);
       });
-      return { id, type: 'table', columns: columns.length ? columns : ['Column 1'], rows };
+      return {
+        id,
+        type: 'table',
+        title: String(block.title ?? ''),
+        columns: columns.length ? columns : ['Column 1'],
+        rows,
+      };
     }
     case 'text':
     default:
@@ -110,7 +116,13 @@ function stripBlock(block) {
     return { id: block.id, type: 'checklist', items: block.items };
   }
   if (block.type === 'table') {
-    return { id: block.id, type: 'table', columns: block.columns, rows: block.rows };
+    return {
+      id: block.id,
+      type: 'table',
+      title: block.title || '',
+      columns: block.columns,
+      rows: block.rows,
+    };
   }
   return { id: block.id, type: 'text', html: block.html };
 }
@@ -119,7 +131,7 @@ function stripBlock(block) {
 export function blocksToText(blocks) {
   return blocks.map((b) => {
     if (b.type === 'checklist') return b.items.map((i) => i.text).join(' ');
-    if (b.type === 'table') return [...b.columns, ...b.rows.flat()].join(' ');
+    if (b.type === 'table') return [b.title || '', ...b.columns, ...b.rows.flat()].join(' ');
     return htmlToText(b.html);
   }).join(' ');
 }
