@@ -7,79 +7,99 @@
 
 import { ICON_GROUPS, glyphFor, isKnownIcon } from '../icons.js';
 import * as taxonomy from '../taxonomy.js';
-import { el, clear, toast } from '../ui.js';
+import { el, clear, toast, openModal } from '../ui.js';
 
 /**
- * Icon picker: a button showing the current icon that opens a grouped,
- * searchable grid. `onChange(key)` fires on selection.
+ * Icon picker: a button showing the current icon, which opens a full dialog to
+ * choose from.
+ *
+ * It deliberately isn't an inline dropdown any more — a scrollable panel
+ * inside the already-scrollable modal body meant two nested scroll regions
+ * fighting over the wheel, which made 216 icons miserable to browse.
  */
 export function iconPicker(initial, onChange) {
   let value = isKnownIcon(initial) ? String(initial).toLowerCase() : '';
 
-  const preview = el('span', { class: 'micon', text: value ? glyphFor(value) : 'add' });
+  const preview = el('span', { class: 'micon', text: value ? glyphFor(value) : 'add_reaction' });
   const caption = el('span', { class: 'icon-picker-name', text: value || 'Choose an icon' });
-  const panel = el('div', { class: 'icon-panel hidden' });
 
   const trigger = el('button', {
     type: 'button',
     class: 'icon-picker-trigger',
-    onclick: (e) => {
-      e.preventDefault();
-      panel.classList.toggle('hidden');
-      if (!panel.classList.contains('hidden')) search.focus();
-    },
-  }, [preview, caption, el('span', { class: 'micon', style: 'margin-left:auto;font-size:18px', text: 'expand_more' })]);
+    onclick: (e) => { e.preventDefault(); open(); },
+  }, [
+    preview,
+    caption,
+    el('span', { class: 'micon icon-picker-caret', text: 'chevron_right' }),
+  ]);
 
-  const grid = el('div');
-  const search = el('input', {
-    class: 'input',
-    type: 'search',
-    placeholder: 'Search icons…',
-    oninput: (e) => renderGrid(e.target.value.trim().toLowerCase()),
-  });
-
-  function select(key) {
+  function set(key) {
     value = key;
-    preview.textContent = key ? glyphFor(key) : 'add';
+    preview.textContent = key ? glyphFor(key) : 'add_reaction';
     caption.textContent = key || 'Choose an icon';
-    panel.classList.add('hidden');
-    renderGrid('');
     onChange(key);
   }
 
-  function renderGrid(filter) {
-    clear(grid);
-    for (const group of ICON_GROUPS) {
-      const matches = Object.keys(group.icons).filter((k) => !filter || k.includes(filter));
-      if (!matches.length) continue;
-      grid.append(el('div', { class: 'icon-group-label', text: group.label }));
-      grid.append(el('div', { class: 'icon-grid' }, matches.map((key) => el('button', {
-        type: 'button',
-        class: `icon-cell${key === value ? ' is-active' : ''}`,
-        title: key,
-        onclick: (e) => { e.preventDefault(); select(key); },
-      }, [el('span', { class: 'micon', text: glyphFor(key) })]))));
-    }
-    if (!grid.children.length) {
-      grid.append(el('div', { class: 'hint', style: 'padding:12px', text: 'No icons match.' }));
-    }
+  function open() {
+    let filter = '';
+    const grid = el('div', { class: 'icon-modal-grid' });
+
+    const renderGrid = () => {
+      clear(grid);
+      let shown = 0;
+      for (const group of ICON_GROUPS) {
+        const matches = Object.keys(group.icons).filter((k) => !filter || k.includes(filter));
+        if (!matches.length) continue;
+        shown += matches.length;
+        grid.append(el('div', { class: 'icon-group-label', text: group.label }));
+        grid.append(el('div', { class: 'icon-grid' }, matches.map((key) => el('button', {
+          type: 'button',
+          class: `icon-cell${key === value ? ' is-active' : ''}`,
+          title: key,
+          onclick: (e) => { e.preventDefault(); set(key); close(); },
+        }, [
+          el('span', { class: 'micon', text: glyphFor(key) }),
+          el('span', { class: 'icon-cell-name', text: key }),
+        ]))));
+      }
+      if (!shown) {
+        grid.append(el('div', { class: 'hint', style: 'padding:20px', text: 'No icons match.' }));
+      }
+    };
+
+    let close = () => {};
+    close = openModal({
+      title: 'Choose an icon',
+      icon: '🎨',
+      wide: true,
+      render: (body, dismiss) => {
+        close = dismiss;
+        body.append(
+          el('div', { class: 'icon-modal-search' }, [
+            el('input', {
+              class: 'input',
+              type: 'search',
+              placeholder: 'Search 216 icons…',
+              oninput: (e) => { filter = e.target.value.trim().toLowerCase(); renderGrid(); },
+            }),
+            el('button', {
+              type: 'button',
+              class: 'btn btn-ghost btn-sm',
+              text: 'No icon',
+              onclick: (e) => { e.preventDefault(); set(''); dismiss(); },
+            }),
+          ]),
+          grid,
+        );
+        renderGrid();
+      },
+      actions: (dismiss) => [
+        el('button', { class: 'btn btn-ghost', text: 'Cancel', onclick: dismiss }),
+      ],
+    });
   }
-  renderGrid('');
 
-  panel.append(
-    el('div', { class: 'icon-panel-search' }, [
-      search,
-      el('button', {
-        type: 'button',
-        class: 'btn btn-ghost btn-sm',
-        text: 'Clear',
-        onclick: (e) => { e.preventDefault(); select(''); },
-      }),
-    ]),
-    grid,
-  );
-
-  return el('div', { class: 'icon-picker' }, [trigger, panel]);
+  return el('div', { class: 'icon-picker' }, [trigger]);
 }
 
 /**

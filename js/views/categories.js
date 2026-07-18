@@ -273,11 +273,20 @@ export function renderCategories(container) {
       });
     });
 
+    // Top-level rows are filled with their own colour, label and icon flipped
+    // to whichever of black/white actually reads on it. Indentation and weight
+    // alone weren't enough to separate three levels at a glance.
+    const colour = normaliseHex(cat.color_hex) || '#7a8794';
+    const tint = shownDepth === 0
+      ? `--row-bg:${colour};--row-fg:${contrastOn(colour)};--row-accent:${colour};`
+      : `--row-bg:color-mix(in srgb, ${colour} ${shownDepth === 1 ? 15 : 7}%, var(--surface));`
+        + `--row-fg:var(--text);--row-accent:${colour};`;
+
     const row = el('div', {
       class: `cat-row depth-${shownDepth}${id === selectedId ? ' is-selected' : ''}`,
       'data-id': id,
       'data-depth': String(shownDepth),
-      style: `--indent:${shownDepth * INDENT_PX}px`,
+      style: `--indent:${shownDepth * INDENT_PX}px;${tint}`,
       // Selection only re-styles the existing rows. Repainting the tree here
       // would replace this node between the two clicks of a double-click, so
       // the dblclick-to-rename listener would never fire.
@@ -294,7 +303,7 @@ export function renderCategories(container) {
       draggable
         ? el('span', { class: 'drag-handle', text: '⠿', title: 'Drag to reorder' })
         : el('span', { style: 'width:10px' }),
-      categoryBadge(cat),
+      categoryBadge(cat, shownDepth === 0 ? 26 : 22, { onColour: shownDepth === 0 }),
       nameNode,
       count ? el('span', {
         class: 'chip',
@@ -685,13 +694,17 @@ export function renderCategories(container) {
   }
 
   /** Coloured icon badge used everywhere a category is shown. */
-  function categoryBadge(cat, size = 26) {
-    const colour = normaliseHex(cat.color_hex);
+  function categoryBadge(cat, size = 26, { onColour = false } = {}) {
+    const colour = normaliseHex(cat.color_hex) || '#7a8794';
+    // On a filled row the badge sits on the category colour, so it borrows the
+    // row's contrast colour rather than the hue it would vanish into.
+    const bg = onColour
+      ? 'color-mix(in srgb, var(--row-fg) 20%, transparent)'
+      : `color-mix(in srgb, ${colour} 18%, transparent)`;
     return el('span', {
       class: 'cat-badge',
-      style: `width:${size}px;height:${size}px;`
-        + `background:${colour ? `color-mix(in srgb, ${colour} 18%, transparent)` : 'var(--surface-2)'};`
-        + `color:${colour || 'var(--text-dim)'}`,
+      style: `width:${size}px;height:${size}px;background:${bg};`
+        + `color:${onColour ? 'var(--row-fg)' : colour}`,
     }, [iconEl(cat.icon_key, { size: Math.round(size * 0.62) })]);
   }
 
@@ -1280,6 +1293,23 @@ function nextSortOrder(parentId) {
     (c) => (c.parent_id || '') === (parentId || ''),
   );
   return siblings.reduce((max, c) => Math.max(max, parseNum(c.sort_order)), 0) + 1;
+}
+
+/**
+ * Black or white, whichever is readable on `hex`. Uses WCAG relative
+ * luminance, so a pale yellow gets dark text and a deep navy gets white,
+ * rather than both being guessed from the hue.
+ */
+function contrastOn(hex) {
+  const h = normaliseHex(hex) || '#7a8794';
+  const channel = (pair) => {
+    const c = parseInt(pair, 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = 0.2126 * channel(h.slice(1, 3))
+    + 0.7152 * channel(h.slice(3, 5))
+    + 0.0722 * channel(h.slice(5, 7));
+  return luminance > 0.45 ? '#10171e' : '#ffffff';
 }
 
 function normaliseHex(v) {

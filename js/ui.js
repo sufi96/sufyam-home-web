@@ -102,7 +102,7 @@ export function toast(message, { error = false, ms = 3400 } = {}) {
  * Opens a modal. `render(body, close)` fills the body; `actions` builds the
  * footer buttons. Returns a close function.
  */
-export function openModal({ title, render, actions, icon = '', danger = false }) {
+export function openModal({ title, render, actions, icon = '', danger = false, wide = false }) {
   const root = document.getElementById('modal-root');
   const body = el('div', { class: 'modal-body' });
   const foot = el('div', { class: 'modal-foot' });
@@ -118,7 +118,7 @@ export function openModal({ title, render, actions, icon = '', danger = false })
     document.removeEventListener('keydown', onKey);
   };
 
-  const modal = el('div', { class: 'modal' }, [
+  const modal = el('div', { class: `modal${wide ? ' is-wide' : ''}` }, [
     head,
     body,
     foot,
