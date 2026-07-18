@@ -129,7 +129,9 @@ async function boot() {
 
   view.replaceChildren(spinner());
 
-  const ok = await trySilentSignIn();
+  // Already holding a live token (e.g. we just came back from an interactive
+  // sign-in) — don't re-validate, or a blocked silent request undoes it.
+  const ok = getAuthState().signedIn || await trySilentSignIn();
   updateAccount();
 
   if (!ok) {

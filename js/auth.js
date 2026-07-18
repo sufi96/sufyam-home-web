@@ -95,7 +95,10 @@ export function requestToken({ silent = false } = {}) {
           resolve(accessToken);
         };
         client.error_callback = (err) => reject(new Error(err?.message || 'Sign-in cancelled'));
-        client.requestAccessToken({ prompt: silent ? 'none' : 'consent' });
+        // '' (not 'consent') for the interactive path: Google then shows the
+        // consent screen only when it actually needs to, instead of re-asking
+        // on every single sign-in.
+        client.requestAccessToken({ prompt: silent ? 'none' : '' });
       })
       .catch(reject);
   });
@@ -113,8 +116,16 @@ export async function signIn() {
   return token;
 }
 
-/** Restores a session on page load without showing any UI. */
+/**
+ * Restores a session on page load without showing any UI.
+ *
+ * The already-have-a-token check is load-bearing: browsers that block
+ * third-party cookies reject `prompt: 'none'` requests outright, so without it
+ * a just-completed interactive sign-in would be discarded and the user bounced
+ * straight back to the sign-in screen — an endless loop.
+ */
 export async function trySilentSignIn() {
+  if (getAuthState().signedIn) return true;
   try {
     await requestToken({ silent: true });
     if (!userEmail) await fetchUserEmail();
