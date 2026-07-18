@@ -1,34 +1,33 @@
-// Notes: free-text notes and checklists, grouped into user-named categories.
+// Notes: one note holds any mix of rich text, checklists and tables.
 //
-// Phase 1 — plaintext only. The `is_encrypted` column exists in the schema
-// from the start so the secure-note work can land later without touching row
-// shape, but nothing writes it yet.
+// There is no note "type" any more — a note is a list of blocks, so a single
+// note can open with prose, carry a checklist in the middle and end with a
+// table. Categories come from the Taxonomy bank (kind='noteCategory') and are
+// managed from here.
 //
-// Checkbox ticks are batched: ticking six items off a list would otherwise be
-// six separate writes (twelve API calls), so they collect for a moment and go
-// out as one repo.saveMany().
+// Phase 1 is plaintext. The `is_encrypted` column exists so secure notes can
+// land later without changing row shape.
 
 import * as repo from '../repo.js';
 import * as taxonomy from '../taxonomy.js';
 import { parseNum, parseBool } from '../schema.js';
-import { labelPicker } from './pickers.js';
+import {
+  BLOCK_TYPES, parseBlocks, serializeBlocks, blocksToText,
+  checklistProgress, blankBlock, isBlockEmpty,
+} from '../noteblocks.js';
+import { richTextEditor, renderRichText, htmlToText } from '../richtext.js';
+import { labelPicker, colourPicker } from './pickers.js';
 import {
   el, clear, toast, openModal, confirmDialog, emptyState, fmtDateTime,
 } from '../ui.js';
-
-const TYPES = [
-  { key: 'note', label: 'Note', icon: 'notes' },
-  { key: 'checklist', label: 'Checklist', icon: 'checklist' },
-];
 
 const UNFILED = 'Unfiled';
 const FLUSH_DELAY = 1200;
 
 export function renderNotes(container) {
   let query = '';
-  let collapsed = new Set(JSON.parse(localStorage.getItem('sufyam.notes.collapsed') || '[]'));
+  const collapsed = new Set(JSON.parse(localStorage.getItem('sufyam.notes.collapsed') || '[]'));
 
-  // Pending checklist ticks, keyed by note id, flushed as one batch.
   const pending = new Map();
   let flushTimer = null;
 
@@ -50,7 +49,6 @@ export function renderNotes(container) {
     }
   }
 
-  // Anything still queued when the user navigates away must not be lost.
   window.addEventListener('beforeunload', flushPending);
 
   function paint() {
@@ -72,63 +70,60 @@ export function renderNotes(container) {
           query ? '🔍' : '🗒',
           query ? `Nothing matches “${query}”.` : 'No notes yet.',
           query ? null : el('button', {
-            class: 'btn',
-            text: '+ New note',
-            onclick: () => openNoteForm({}, paint),
+            class: 'btn', text: '+ New note', onclick: () => openNoteForm({}, paint),
           }),
         ),
       ]));
       return;
     }
 
-    // Searching flattens the grouping: when you're hunting for something, the
-    // category headers are noise between you and the hit.
+    // Searching flattens the grouping — headers are noise between you and the
+    // hit when you already know what you're looking for.
     if (query) {
       container.append(el('div', { class: 'notes-grid' }, matching.map(noteCard)));
       return;
     }
 
     const pinned = matching.filter((n) => parseBool(n.pinned));
-    if (pinned.length) {
-      container.append(section('Pinned', 'push_pin', pinned, { pinnedSection: true }));
-    }
+    if (pinned.length) container.append(section('Pinned', 'push_pin', pinned, { pin: true }));
 
     const rest = matching.filter((n) => !parseBool(n.pinned));
-    const byCategory = new Map();
+    const buckets = new Map();
     for (const note of rest) {
       const key = (note.category || '').trim() || UNFILED;
-      if (!byCategory.has(key)) byCategory.set(key, []);
-      byCategory.get(key).push(note);
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(note);
     }
 
-    const names = [...byCategory.keys()].sort((a, b) => {
-      if (a === UNFILED) return 1;   // unfiled always sinks to the bottom
-      if (b === UNFILED) return -1;
-      return a.localeCompare(b);
-    });
+    // Categories appear in the order the taxonomy defines, so the tab reads
+    // the way the user arranged it rather than alphabetically.
+    const ordered = taxonomy.names(taxonomy.KIND_NOTE_CATEGORY)
+      .filter((name) => buckets.has(name));
+    const strays = [...buckets.keys()]
+      .filter((k) => k !== UNFILED && !ordered.includes(k))
+      .sort((a, b) => a.localeCompare(b));
 
-    for (const name of names) {
-      container.append(section(name, 'folder', byCategory.get(name)));
+    for (const name of [...ordered, ...strays]) {
+      const entry = taxonomy.list(taxonomy.KIND_NOTE_CATEGORY)
+        .find((t) => t.name === name);
+      container.append(section(name, 'folder', buckets.get(name), { entry }));
+    }
+    if (buckets.has(UNFILED)) {
+      container.append(section(UNFILED, 'folder_open', buckets.get(UNFILED)));
     }
   }
 
   function toolbar(notes) {
-    const categories = [...new Set(notes.map((n) => (n.category || '').trim()).filter(Boolean))];
     return el('div', { class: 'notes-toolbar' }, [
       el('div', { class: 'notes-search' }, [
         el('span', { class: 'micon notes-search-icon', text: 'search' }),
         el('input', {
           class: 'input',
           type: 'search',
-          placeholder: 'Search notes, checklists, labels…',
+          placeholder: 'Search notes, checklists, tables, labels…',
           value: query,
           oninput: (e) => { query = e.target.value.trim().toLowerCase(); paint(); },
         }),
-        query ? el('button', {
-          class: 'btn btn-ghost btn-sm',
-          text: 'Clear',
-          onclick: () => { query = ''; paint(); },
-        }) : null,
       ]),
       el('div', { style: 'flex:1' }),
       query ? el('span', {
@@ -136,61 +131,73 @@ export function renderNotes(container) {
         text: `${notes.filter((n) => matches(n, query)).length} of ${notes.length}`,
       }) : null,
       el('button', {
-        class: 'btn',
-        text: '+ New note',
-        onclick: () => openNoteForm({ category: categories[0] || '' }, paint),
-      }),
+        class: 'btn btn-ghost btn-sm',
+        onclick: () => openCategoryManager(paint),
+      }, [el('span', { class: 'micon', style: 'font-size:17px', text: 'folder_managed' }), 'Categories']),
+      el('button', { class: 'btn', text: '+ New note', onclick: () => openNoteForm({}, paint) }),
     ]);
   }
 
-  function section(name, icon, items, { pinnedSection = false } = {}) {
+  function section(name, icon, items, { pin = false, entry = null } = {}) {
     const isCollapsed = collapsed.has(name);
-    const total = items.length;
-
-    const header = el('button', {
-      class: `notes-section-head${isCollapsed ? ' is-collapsed' : ''}`,
-      onclick: () => {
-        if (isCollapsed) collapsed.delete(name); else collapsed.add(name);
-        localStorage.setItem('sufyam.notes.collapsed', JSON.stringify([...collapsed]));
-        paint();
-      },
-    }, [
-      el('span', { class: 'micon notes-section-caret', text: 'expand_more' }),
-      el('span', { class: `micon notes-section-icon${pinnedSection ? ' is-pinned' : ''}`, text: icon }),
-      el('span', { class: 'notes-section-name', text: name }),
-      el('span', { class: 'notes-section-count', text: String(total) }),
-    ]);
+    const colour = entry ? normaliseHex(entry.color_hex) : '';
 
     return el('div', { class: 'notes-section' }, [
-      header,
+      el('button', {
+        class: `notes-section-head${isCollapsed ? ' is-collapsed' : ''}`,
+        style: colour ? `--section-accent:${colour}` : '',
+        onclick: () => {
+          if (isCollapsed) collapsed.delete(name); else collapsed.add(name);
+          localStorage.setItem('sufyam.notes.collapsed', JSON.stringify([...collapsed]));
+          paint();
+        },
+      }, [
+        el('span', { class: 'micon notes-section-caret', text: 'expand_more' }),
+        el('span', {
+          class: `micon notes-section-icon${pin ? ' is-pinned' : ''}`,
+          text: entry?.icon_key ? glyphOr(entry.icon_key, icon) : icon,
+        }),
+        el('span', { class: 'notes-section-name', text: name }),
+        el('span', { class: 'notes-section-count', text: String(items.length) }),
+      ]),
       isCollapsed ? null : el('div', { class: 'notes-grid' }, items.map(noteCard)),
     ]);
   }
 
   function noteCard(note) {
+    const blocks = parseBlocks(note.content);
     const labels = splitLabels(note.labels);
     const accent = normaliseHex(note.color_hex);
+    const progress = checklistProgress(blocks);
 
     return el('div', {
       class: 'note-card',
-      style: accent ? `--note-accent:${accent}` : '',
+      style: accent ? `--note-accent:${accent};--note-tint:color-mix(in srgb, ${accent} 7%, var(--surface))` : '',
       onclick: (e) => {
-        if (e.target.closest('.note-check, .note-card-action')) return;
+        if (e.target.closest('.note-check')) return;
         openNoteForm(note, paint);
       },
     }, [
       el('div', { class: 'note-card-head' }, [
-        el('span', {
-          class: 'micon note-type-icon',
-          text: note.type === 'checklist' ? 'checklist' : 'notes',
-        }),
         el('span', { class: 'note-title', text: note.title || '(untitled)' }),
         parseBool(note.pinned)
           ? el('span', { class: 'micon note-pin', text: 'push_pin', title: 'Pinned' })
           : null,
       ]),
 
-      note.type === 'checklist' ? checklistPreview(note) : textPreview(note),
+      progress.total
+        ? el('div', {}, [
+            el('div', { class: 'note-progress' }, [
+              el('div', {
+                class: 'note-progress-fill',
+                style: `width:${Math.round((progress.done / progress.total) * 100)}%`,
+              }),
+            ]),
+            el('div', { class: 'note-progress-text', text: `${progress.done} of ${progress.total} done` }),
+          ])
+        : null,
+
+      el('div', { class: 'note-preview' }, blocks.slice(0, 4).map((b) => previewBlock(b, note))),
 
       labels.length
         ? el('div', { class: 'note-labels' }, labels.map((l) => el('span', {
@@ -200,28 +207,9 @@ export function renderNotes(container) {
     ]);
   }
 
-  function textPreview(note) {
-    const body = String(note.content || '').trim();
-    if (!body) return el('div', { class: 'note-body is-empty', text: 'Empty note' });
-    return el('div', { class: 'note-body', text: body });
-  }
-
-  function checklistPreview(note) {
-    const items = parseChecklist(note.content);
-    if (!items.length) return el('div', { class: 'note-body is-empty', text: 'Empty checklist' });
-
-    const done = items.filter((i) => i.done).length;
-    const shown = items.slice(0, 6);
-
-    return el('div', {}, [
-      el('div', { class: 'note-progress' }, [
-        el('div', {
-          class: 'note-progress-fill',
-          style: `width:${Math.round((done / items.length) * 100)}%`,
-        }),
-      ]),
-      el('div', { class: 'note-progress-text', text: `${done} of ${items.length} done` }),
-      el('div', { class: 'note-checks' }, shown.map((item, i) => el('label', {
+  function previewBlock(block, note) {
+    if (block.type === 'checklist') {
+      return el('div', { class: 'note-checks' }, block.items.slice(0, 5).map((item, i) => el('label', {
         class: `note-check${item.done ? ' is-done' : ''}`,
       }, [
         el('input', {
@@ -229,22 +217,31 @@ export function renderNotes(container) {
           checked: item.done || null,
           onclick: (e) => {
             e.stopPropagation();
-            const next = parseChecklist(note.content);
-            next[i].done = e.target.checked;
-            // Update the cached row immediately so the UI stays responsive,
-            // then let the debounced batch carry it to the sheet.
-            const updated = { ...note, content: JSON.stringify(next) };
-            Object.assign(note, updated);
-            queueSave(updated);
+            // Mutate the cached row so the card stays responsive, then let the
+            // debounced batch carry it to the sheet.
+            const blocks = parseBlocks(note.content);
+            const target = blocks.find((b) => b.id === block.id);
+            if (!target) return;
+            target.items[i].done = e.target.checked;
+            note.content = serializeBlocks(blocks);
+            queueSave({ ...note });
             paint();
           },
         }),
         el('span', { class: 'note-check-text', text: item.text || '(blank)' }),
-      ]))),
-      items.length > shown.length
-        ? el('div', { class: 'note-more', text: `+${items.length - shown.length} more` })
-        : null,
-    ]);
+      ])));
+    }
+
+    if (block.type === 'table') {
+      return el('div', { class: 'note-table-chip' }, [
+        el('span', { class: 'micon', style: 'font-size:15px', text: 'table_chart' }),
+        `Table · ${block.columns.length} × ${block.rows.length}`,
+      ]);
+    }
+
+    const text = htmlToText(block.html);
+    if (!text) return null;
+    return el('div', { class: 'note-body', text });
   }
 
   function setupPrompt() {
@@ -252,8 +249,8 @@ export function renderNotes(container) {
       el('div', { class: 'card' }, [
         el('h2', { text: 'Set up Notes' }),
         el('p', {
-          text: 'Your spreadsheet does not have a Notes tab yet. '
-            + 'This adds it with the right header row; nothing else is touched.',
+          text: 'Your spreadsheet does not have a Notes tab yet. This adds it with '
+            + 'the right header row; nothing else is touched.',
         }),
         el('button', {
           class: 'btn',
@@ -281,19 +278,149 @@ export function renderNotes(container) {
   paint();
 }
 
-// ---------- editor ----------
+// ---------- category manager ----------
+
+function openCategoryManager(onDone) {
+  openModal({
+    title: 'Note categories',
+    icon: '📁',
+    render: (body) => {
+      const host = el('div');
+      body.append(host);
+
+      const render = () => {
+        clear(host);
+        const items = taxonomy.list(taxonomy.KIND_NOTE_CATEGORY);
+        const usage = taxonomy.noteCategoryUsage();
+
+        if (!items.length) {
+          host.append(el('div', { class: 'hint', style: 'padding:8px 0', text: 'No categories yet.' }));
+        }
+
+        for (const entry of items) {
+          const count = usage.get(entry.name.toLowerCase()) || 0;
+          const nameInput = el('input', {
+            class: 'input',
+            type: 'text',
+            value: entry.name,
+            onchange: async (e) => {
+              const next = e.target.value.trim();
+              if (!next || next === entry.name) { e.target.value = entry.name; return; }
+              try {
+                // Notes reference categories by name, so a rename has to carry
+                // the notes with it or they all fall into Unfiled.
+                const affected = repo.rows('Notes').filter((n) => (n.category || '').trim() === entry.name);
+                await taxonomy.rename(entry, next);
+                if (affected.length) {
+                  await repo.saveMany('Notes', affected.map((n) => ({ ...n, category: next })));
+                }
+                toast(affected.length ? `Renamed · ${affected.length} notes moved` : 'Renamed');
+                render();
+              } catch (err) {
+                e.target.value = entry.name;
+                toast(err.message, { error: true });
+              }
+            },
+          });
+
+          host.append(el('div', { class: 'cat-manage-row' }, [
+            colourPicker(entry.color_hex, async (hex) => {
+              try { await taxonomy.update(entry, { color_hex: hex }); render(); }
+              catch (err) { toast(err.message, { error: true }); }
+            }, { compact: true }),
+            nameInput,
+            el('span', { class: 'chip', text: `${count}` }),
+            el('button', {
+              class: 'btn btn-ghost btn-sm',
+              title: 'Move up',
+              onclick: async () => {
+                const ids = items.map((t) => t.id);
+                const i = ids.indexOf(entry.id);
+                if (i <= 0) return;
+                [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
+                await taxonomy.reorder(taxonomy.KIND_NOTE_CATEGORY, ids);
+                render();
+              },
+            }, [el('span', { class: 'micon', style: 'font-size:16px', text: 'arrow_upward' })]),
+            el('button', {
+              class: 'btn btn-danger btn-sm',
+              title: 'Delete',
+              onclick: async () => {
+                const ok = await confirmDialog({
+                  title: `Delete "${entry.name}"?`,
+                  message: 'The category is removed from the list.',
+                  warnings: count ? [{
+                    icon: '🗒',
+                    text: `${count} note${count === 1 ? '' : 's'} use it. They are kept, `
+                      + 'but move to Unfiled until you file them somewhere else.',
+                  }] : [],
+                  note: 'Nothing is erased — the row stays in the sheet and can be restored.',
+                  confirmLabel: 'Delete category',
+                });
+                if (!ok) return;
+                try {
+                  await taxonomy.remove(entry);
+                  const affected = repo.rows('Notes').filter((n) => (n.category || '').trim() === entry.name);
+                  if (affected.length) {
+                    await repo.saveMany('Notes', affected.map((n) => ({ ...n, category: '' })));
+                  }
+                  toast('Category deleted');
+                  render();
+                } catch (err) { toast(err.message, { error: true }); }
+              },
+            }, [el('span', { class: 'micon', style: 'font-size:16px', text: 'delete' })]),
+          ]));
+        }
+
+        const input = el('input', {
+          class: 'input',
+          type: 'text',
+          placeholder: 'New category name',
+          onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } },
+        });
+        const add = async () => {
+          const name = input.value.trim();
+          if (!name) return;
+          try {
+            await taxonomy.create(taxonomy.KIND_NOTE_CATEGORY, { name });
+            input.value = '';
+            toast(`"${name}" added`);
+            render();
+          } catch (err) { toast(err.message, { error: true }); }
+        };
+
+        host.append(el('div', { class: 'cat-manage-add' }, [
+          input,
+          el('button', { class: 'btn btn-sm', text: 'Add', onclick: add }),
+        ]));
+      };
+
+      render();
+    },
+    actions: (close) => [
+      el('button', {
+        class: 'btn',
+        text: 'Done',
+        onclick: () => { close(); onDone?.(); },
+      }),
+    ],
+  });
+}
+
+// ---------- note editor ----------
 
 function openNoteForm(note, onSaved) {
   const isEdit = Boolean(note.id);
   const values = {
     title: note.title || '',
-    type: note.type || 'note',
     category: (note.category || '').trim(),
-    content: note.content || '',
     labels: note.labels || '',
     pinned: parseBool(note.pinned),
     color_hex: normaliseHex(note.color_hex) || '',
   };
+  let blocks = parseBlocks(note.content);
+  if (!blocks.length) blocks = [blankBlock('text')];
+
   const errorNode = el('div', { class: 'error hidden' });
 
   openModal({
@@ -301,47 +428,58 @@ function openNoteForm(note, onSaved) {
     icon: '🗒',
     wide: true,
     render: (body) => {
-      const bodyHost = el('div');
+      const blockHost = el('div', { class: 'block-list' });
 
-      const renderBody = () => {
-        clear(bodyHost);
-        bodyHost.append(values.type === 'checklist'
-          ? checklistEditor(values)
-          : el('textarea', {
-              class: 'textarea note-textarea',
-              text: values.content,
-              placeholder: 'Write anything…',
-              oninput: (e) => { values.content = e.target.value; },
-            }));
+      const renderBlocks = () => {
+        clear(blockHost);
+        blocks.forEach((block, index) => {
+          blockHost.append(blockEditor(block, {
+            index,
+            total: blocks.length,
+            onMove: (dir) => {
+              const to = index + dir;
+              if (to < 0 || to >= blocks.length) return;
+              [blocks[index], blocks[to]] = [blocks[to], blocks[index]];
+              renderBlocks();
+            },
+            onRemove: () => {
+              blocks.splice(index, 1);
+              if (!blocks.length) blocks.push(blankBlock('text'));
+              renderBlocks();
+            },
+          }));
+        });
+
+        blockHost.append(el('div', { class: 'block-add' },
+          BLOCK_TYPES.map((t) => el('button', {
+            type: 'button',
+            class: 'btn btn-ghost btn-sm',
+            onclick: (e) => {
+              e.preventDefault();
+              blocks.push(blankBlock(t.type));
+              renderBlocks();
+            },
+          }, [
+            el('span', { class: 'micon', style: 'font-size:16px', text: t.icon }),
+            t.label,
+          ]))));
       };
 
-      // Remembers what each type held during this edit, so flipping Note →
-      // Checklist → Note gives back the original prose instead of the same
-      // text decorated with "[ ]" markers.
-      const draft = { [values.type]: values.content };
-
-      const typeToggle = el('div', { class: 'segmented' }, TYPES.map((t) => el('button', {
-        class: `segmented-btn${values.type === t.key ? ' is-active' : ''}`,
-        onclick: (e) => {
-          e.preventDefault();
-          if (values.type === t.key) return;
-          draft[values.type] = values.content;
-          values.content = draft[t.key] !== undefined
-            ? draft[t.key]
-            : convertContent(values.content, values.type, t.key);
-          values.type = t.key;
-          for (const b of typeToggle.children) b.classList.remove('is-active');
-          e.currentTarget.classList.add('is-active');
-          renderBody();
-        },
-      }, [el('span', { class: 'micon', style: 'font-size:16px', text: t.icon }), t.label])));
-
-      // Existing categories offered as suggestions, but free text so a new one
-      // needs no separate "create category" step.
-      const categories = [...new Set(repo.rows('Notes')
-        .map((n) => (n.category || '').trim())
-        .filter(Boolean))].sort();
-      const listId = `note-cats-${Math.random().toString(36).slice(2, 8)}`;
+      const categories = taxonomy.names(taxonomy.KIND_NOTE_CATEGORY);
+      const categorySelect = el('select', {
+        class: 'select',
+        onchange: (e) => { values.category = e.target.value; },
+      }, [
+        el('option', { value: '', text: '— Unfiled —' }),
+        ...categories.map((name) => el('option', {
+          value: name, text: name, selected: values.category === name,
+        })),
+        // A category the note already has but the taxonomy doesn't know, e.g.
+        // typed before this list existed.
+        ...(values.category && !categories.includes(values.category)
+          ? [el('option', { value: values.category, text: `${values.category} (not in list)`, selected: true })]
+          : []),
+      ]);
 
       body.append(
         el('div', { class: 'field-row' }, [
@@ -352,24 +490,12 @@ function openNoteForm(note, onSaved) {
             placeholder: 'Wifi details, Shopping, …',
             oninput: (e) => { values.title = e.target.value; },
           }), { required: true, error: errorNode }),
-          field('Category', el('div', {}, [
-            el('input', {
-              class: 'input',
-              type: 'text',
-              value: values.category,
-              list: listId,
-              placeholder: 'Type a new one or pick an existing',
-              oninput: (e) => { values.category = e.target.value; },
-            }),
-            el('datalist', { id: listId }, categories.map((c) => el('option', { value: c }))),
-          ])),
+          field('Category', categorySelect),
         ]),
 
-        field('Type', typeToggle),
-        field('Content', bodyHost),
-        field('Labels', labelPicker(values.labels, (names) => {
-          values.labels = names.join('|');
-        })),
+        field('Colour', colourPicker(values.color_hex, (hex) => { values.color_hex = hex; })),
+        field('Content', blockHost),
+        field('Labels', labelPicker(values.labels, (names) => { values.labels = names.join('|'); })),
 
         el('label', { class: 'note-pin-toggle' }, [
           el('input', {
@@ -387,7 +513,7 @@ function openNoteForm(note, onSaved) {
         ]) : null,
       );
 
-      renderBody();
+      renderBlocks();
     },
     actions: (close) => {
       const buttons = [];
@@ -425,12 +551,15 @@ function openNoteForm(note, onSaved) {
         save.disabled = true;
         save.textContent = 'Saving…';
         try {
+          // Drop blocks the user added but never filled, so an accidental
+          // "+ Table" doesn't leave an empty grid on the card forever.
+          const kept = blocks.filter((b) => !isBlockEmpty(b));
           await repo.save('Notes', {
             ...(isEdit ? note : {}),
             title: values.title.trim(),
-            type: values.type,
+            type: 'rich',
             category: values.category.trim(),
-            content: values.content,
+            content: serializeBlocks(kept.length ? kept : [blankBlock('text')]),
             labels: values.labels,
             pinned: values.pinned,
             is_encrypted: false,
@@ -454,57 +583,177 @@ function openNoteForm(note, onSaved) {
   });
 }
 
-/** Editable checklist: reorderable-free, just add / tick / remove. */
-function checklistEditor(values) {
+// ---------- block editors ----------
+
+function blockEditor(block, { index, total, onMove, onRemove }) {
+  const meta = BLOCK_TYPES.find((t) => t.type === block.type) || BLOCK_TYPES[0];
+
+  const head = el('div', { class: 'block-head' }, [
+    el('span', { class: 'micon block-icon', text: meta.icon }),
+    el('span', { class: 'block-kind', text: meta.label }),
+    el('div', { style: 'flex:1' }),
+    el('button', {
+      type: 'button', class: 'btn btn-ghost btn-sm', title: 'Move up',
+      disabled: index === 0 || null,
+      onclick: (e) => { e.preventDefault(); onMove(-1); },
+    }, [el('span', { class: 'micon', style: 'font-size:15px', text: 'arrow_upward' })]),
+    el('button', {
+      type: 'button', class: 'btn btn-ghost btn-sm', title: 'Move down',
+      disabled: index === total - 1 || null,
+      onclick: (e) => { e.preventDefault(); onMove(1); },
+    }, [el('span', { class: 'micon', style: 'font-size:15px', text: 'arrow_downward' })]),
+    el('button', {
+      type: 'button', class: 'btn btn-ghost btn-sm', title: 'Remove block',
+      onclick: (e) => { e.preventDefault(); onRemove(); },
+    }, [el('span', { class: 'micon', style: 'font-size:15px', text: 'close' })]),
+  ]);
+
+  let bodyNode;
+  if (block.type === 'checklist') bodyNode = checklistEditor(block);
+  else if (block.type === 'table') bodyNode = tableEditor(block);
+  else bodyNode = richTextEditor(block.html, (html) => { block.html = html; });
+
+  return el('div', { class: 'block' }, [head, bodyNode]);
+}
+
+function checklistEditor(block) {
   const host = el('div', { class: 'checklist-editor' });
 
   const render = () => {
     clear(host);
-    const items = parseChecklist(values.content);
-
-    const commit = () => { values.content = JSON.stringify(items); };
-
-    items.forEach((item, i) => {
+    block.items.forEach((item, i) => {
       host.append(el('div', { class: `checklist-row${item.done ? ' is-done' : ''}` }, [
         el('input', {
           type: 'checkbox',
           checked: item.done || null,
-          onchange: (e) => { items[i].done = e.target.checked; commit(); render(); },
+          onchange: (e) => { block.items[i].done = e.target.checked; render(); },
         }),
         el('input', {
           class: 'input checklist-text',
           type: 'text',
           value: item.text,
           placeholder: 'Item',
-          oninput: (e) => { items[i].text = e.target.value; commit(); },
+          oninput: (e) => { block.items[i].text = e.target.value; },
           onkeydown: (e) => {
-            if (e.key !== 'Enter') return;
-            e.preventDefault();
-            items.splice(i + 1, 0, { text: '', done: false });
-            commit();
-            render();
-            host.querySelectorAll('.checklist-text')[i + 1]?.focus();
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              block.items.splice(i + 1, 0, { text: '', done: false });
+              render();
+              host.querySelectorAll('.checklist-text')[i + 1]?.focus();
+            }
+            if (e.key === 'Backspace' && !e.target.value && block.items.length > 1) {
+              e.preventDefault();
+              block.items.splice(i, 1);
+              render();
+              host.querySelectorAll('.checklist-text')[Math.max(0, i - 1)]?.focus();
+            }
           },
         }),
         el('button', {
-          class: 'btn btn-ghost btn-sm',
-          title: 'Remove',
-          onclick: (e) => { e.preventDefault(); items.splice(i, 1); commit(); render(); },
-        }, [el('span', { class: 'micon', style: 'font-size:16px', text: 'close' })]),
+          type: 'button', class: 'btn btn-ghost btn-sm', title: 'Remove',
+          onclick: (e) => {
+            e.preventDefault();
+            block.items.splice(i, 1);
+            if (!block.items.length) block.items.push({ text: '', done: false });
+            render();
+          },
+        }, [el('span', { class: 'micon', style: 'font-size:15px', text: 'close' })]),
       ]));
     });
 
     host.append(el('button', {
-      class: 'btn btn-ghost btn-sm checklist-add',
+      type: 'button', class: 'btn btn-ghost btn-sm checklist-add',
       onclick: (e) => {
         e.preventDefault();
-        items.push({ text: '', done: false });
-        commit();
+        block.items.push({ text: '', done: false });
         render();
         const inputs = host.querySelectorAll('.checklist-text');
         inputs[inputs.length - 1]?.focus();
       },
     }, [el('span', { class: 'micon', style: 'font-size:16px', text: 'add' }), 'Add item']));
+  };
+
+  render();
+  return host;
+}
+
+function tableEditor(block) {
+  const host = el('div', { class: 'table-editor' });
+
+  const render = () => {
+    clear(host);
+
+    const head = el('tr', {}, [
+      ...block.columns.map((col, c) => el('th', {}, [
+        el('input', {
+          class: 'table-cell table-head-cell',
+          type: 'text',
+          value: col,
+          oninput: (e) => { block.columns[c] = e.target.value; },
+        }),
+        el('button', {
+          type: 'button', class: 'table-del', title: 'Delete column',
+          onclick: (e) => {
+            e.preventDefault();
+            if (block.columns.length <= 1) return;
+            block.columns.splice(c, 1);
+            block.rows.forEach((r) => r.splice(c, 1));
+            render();
+          },
+        }, [el('span', { class: 'micon', style: 'font-size:14px', text: 'close' })]),
+      ])),
+      el('th', { class: 'table-add-col' }, [
+        el('button', {
+          type: 'button', class: 'btn btn-ghost btn-sm', title: 'Add column',
+          onclick: (e) => {
+            e.preventDefault();
+            block.columns.push(`Column ${block.columns.length + 1}`);
+            block.rows.forEach((r) => r.push(''));
+            render();
+          },
+        }, [el('span', { class: 'micon', style: 'font-size:15px', text: 'add' })]),
+      ]),
+    ]);
+
+    const bodyRows = block.rows.map((row, r) => el('tr', {}, [
+      ...row.map((cell, c) => el('td', {}, [
+        el('input', {
+          class: 'table-cell',
+          type: 'text',
+          value: cell,
+          oninput: (e) => { block.rows[r][c] = e.target.value; },
+        }),
+      ])),
+      el('td', { class: 'table-row-actions' }, [
+        el('button', {
+          type: 'button', class: 'table-del', title: 'Delete row',
+          onclick: (e) => {
+            e.preventDefault();
+            block.rows.splice(r, 1);
+            if (!block.rows.length) block.rows.push(block.columns.map(() => ''));
+            render();
+          },
+        }, [el('span', { class: 'micon', style: 'font-size:14px', text: 'close' })]),
+      ]),
+    ]));
+
+    host.append(
+      el('div', { class: 'table-scroll' }, [
+        el('table', { class: 'note-table' }, [
+          el('thead', {}, [head]),
+          el('tbody', {}, bodyRows),
+        ]),
+      ]),
+      el('button', {
+        type: 'button', class: 'btn btn-ghost btn-sm',
+        style: 'margin-top:6px',
+        onclick: (e) => {
+          e.preventDefault();
+          block.rows.push(block.columns.map(() => ''));
+          render();
+        },
+      }, [el('span', { class: 'micon', style: 'font-size:16px', text: 'add' }), 'Add row']),
+    );
   };
 
   render();
@@ -522,49 +771,13 @@ function field(label, control, { required = false, hint = '', error = null } = {
   ]);
 }
 
-/** Tolerant of hand-editing in Sheets: anything unparseable becomes lines. */
-export function parseChecklist(raw) {
-  const text = String(raw || '').trim();
-  if (!text) return [];
-  try {
-    const parsed = JSON.parse(text);
-    if (Array.isArray(parsed)) {
-      return parsed.map((i) => (typeof i === 'string'
-        ? { text: i, done: false }
-        : { text: String(i?.text ?? ''), done: Boolean(i?.done) }));
-    }
-  } catch {
-    // Not JSON — treat each line as an item so a note typed directly into the
-    // spreadsheet still opens as a usable checklist.
-  }
-  return text.split('\n').map((line) => {
-    const m = line.match(/^\s*[-*]?\s*\[( |x|X)\]\s*(.*)$/);
-    if (m) return { text: m[2], done: m[1].toLowerCase() === 'x' };
-    return { text: line.replace(/^\s*[-*]\s*/, ''), done: false };
-  }).filter((i) => i.text);
-}
-
-/** Keeps the body meaningful when the type changes rather than dropping it. */
-function convertContent(content, from, to) {
-  if (from === to) return content;
-  if (to === 'checklist') {
-    return JSON.stringify(parseChecklist(content));
-  }
-  return parseChecklist(content)
-    .map((i) => `${i.done ? '[x]' : '[ ]'} ${i.text}`)
-    .join('\n');
-}
-
 function matches(note, query) {
-  const haystack = [
+  return [
     note.title,
     note.category,
     note.labels,
-    note.type === 'checklist'
-      ? parseChecklist(note.content).map((i) => i.text).join(' ')
-      : note.content,
-  ].join(' ').toLowerCase();
-  return haystack.includes(query);
+    blocksToText(parseBlocks(note.content)),
+  ].join(' ').toLowerCase().includes(query);
 }
 
 function splitLabels(raw) {
@@ -575,9 +788,15 @@ function nextSortOrder() {
   return repo.rows('Notes').reduce((max, n) => Math.max(max, parseNum(n.sort_order)), 0) + 1;
 }
 
+function glyphOr(key, fallback) {
+  return key || fallback;
+}
+
 function normaliseHex(v) {
   const s = String(v || '').trim();
   if (!s) return '';
   const hex = s.startsWith('#') ? s.slice(1) : s;
   return /^[0-9a-fA-F]{6}$/.test(hex) ? `#${hex.toLowerCase()}` : '';
 }
+
+export { renderRichText };

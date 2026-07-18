@@ -115,16 +115,43 @@ export function labelPicker(initialCsv, onChange) {
 
   const emit = () => onChange([...selected]);
 
+  let filter = '';
+
   function render() {
     clear(wrap);
     const usage = taxonomy.labelUsage();
     const banked = taxonomy.names(taxonomy.KIND_LABEL);
 
     // Anything already on this row but not in the bank still needs a chip.
-    const all = [...new Set([...banked, ...selected])].sort((a, b) => {
+    const everything = [...new Set([...banked, ...selected])].sort((a, b) => {
       const d = (usage.get(b.toLowerCase()) || 0) - (usage.get(a.toLowerCase()) || 0);
       return d !== 0 ? d : a.localeCompare(b);
     });
+
+    // Selected labels always show, even when filtered out, so a search can't
+    // hide what is currently applied.
+    const all = filter
+      ? everything.filter((n) => n.toLowerCase().includes(filter) || selected.has(n))
+      : everything;
+
+    // The search box only earns its space once the bank is big enough to
+    // overflow the capped chip area.
+    if (everything.length > 8) {
+      wrap.append(el('div', { class: 'label-search' }, [
+        el('span', { class: 'micon label-search-icon', text: 'search' }),
+        el('input', {
+          class: 'input',
+          type: 'search',
+          placeholder: `Filter ${everything.length} labels…`,
+          value: filter,
+          oninput: (e) => {
+            filter = e.target.value.trim().toLowerCase();
+            render();
+            wrap.querySelector('.label-search input')?.focus();
+          },
+        }),
+      ]));
+    }
 
     if (all.length) {
       wrap.append(el('div', { class: 'label-chips' }, all.map((name) => {
@@ -146,6 +173,8 @@ export function labelPicker(initialCsv, onChange) {
             : null,
         ]);
       })));
+    } else if (filter) {
+      wrap.append(el('div', { class: 'hint', style: 'padding:6px 0', text: 'No labels match.' }));
     }
 
     const input = el('input', {
@@ -203,4 +232,70 @@ export function labelPicker(initialCsv, onChange) {
 
   render();
   return wrap;
+}
+
+
+// A small palette plus a custom swatch. Presets exist because picking from a
+// full colour wheel every time produces a set of notes that don't look like a
+// set; these are chosen to stay legible as a card accent in both themes.
+const PRESETS = [
+  '#ef5350', '#ec407a', '#ab47bc', '#5c6bc0',
+  '#42a5f5', '#26a69a', '#66bb6a', '#9ccc65',
+  '#ffca28', '#ffa726', '#8d6e63', '#78909c',
+];
+
+/**
+ * Colour picker. `onChange(hex)` fires with '' when cleared.
+ * `compact` renders just the swatch, for tight rows.
+ */
+export function colourPicker(initial, onChange, { compact = false } = {}) {
+  let value = normaliseHex(initial);
+
+  const wrap = el('div', { class: `colour-picker${compact ? ' is-compact' : ''}` });
+
+  const render = () => {
+    clear(wrap);
+
+    if (!compact) {
+      wrap.append(el('button', {
+        type: 'button',
+        class: `colour-dot is-none${value ? '' : ' is-active'}`,
+        title: 'No colour',
+        onclick: (e) => { e.preventDefault(); value = ''; onChange(''); render(); },
+      }, [el('span', { class: 'micon', style: 'font-size:15px', text: 'block' })]));
+
+      for (const hex of PRESETS) {
+        wrap.append(el('button', {
+          type: 'button',
+          class: `colour-dot${value === hex ? ' is-active' : ''}`,
+          style: `background:${hex}`,
+          title: hex,
+          onclick: (e) => { e.preventDefault(); value = hex; onChange(hex); render(); },
+        }));
+      }
+    }
+
+    const custom = el('input', {
+      type: 'color',
+      class: 'colour-swatch',
+      value: value || '#66bb6a',
+      title: compact ? 'Colour' : 'Custom colour',
+      oninput: (e) => {
+        value = e.target.value;
+        onChange(value);
+        if (!compact) render();
+      },
+    });
+    wrap.append(custom);
+  };
+
+  render();
+  return wrap;
+}
+
+function normaliseHex(v) {
+  const s = String(v || '').trim();
+  if (!s) return '';
+  const hex = s.startsWith('#') ? s.slice(1) : s;
+  return /^[0-9a-fA-F]{6}$/.test(hex) ? `#${hex.toLowerCase()}` : '';
 }
