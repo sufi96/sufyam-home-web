@@ -8,6 +8,7 @@ import {
 import * as repo from './repo.js';
 import { renderEntity } from './views/entity.js';
 import { renderCategories } from './views/categories.js';
+import { renderNotes } from './views/notes.js';
 import { renderDashboard } from './views/dashboard.js';
 import { renderSettings } from './views/settings.js';
 import { el, clear, toast, spinner } from './ui.js';
@@ -17,6 +18,7 @@ import { el, clear, toast, spinner } from './ui.js';
 const ICONS = {
   dashboard: 'donut_small',
   Categories: 'account_tree',
+  Notes: 'sticky_note_2',
   Transactions: 'receipt_long',
   Inventory: 'inventory_2',
   Stock_Movements: 'swap_horiz',
@@ -94,6 +96,7 @@ function render() {
 
   if (current === 'dashboard') renderDashboard(view);
   else if (current === 'Categories') renderCategories(view);
+  else if (current === 'Notes') renderNotes(view);
   else renderEntity(view, current);
 }
 

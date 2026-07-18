@@ -1397,3 +1397,203 @@ td.actions { text-align: right; white-space: nowrap; }
     --shadow: 0 1px 3px rgba(0, 0, 0, .4), 0 4px 16px rgba(0, 0, 0, .25);
   }
 }
+
+
+/* ---------- Notes ---------- */
+
+.notes-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.notes-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  max-width: 460px;
+}
+
+.notes-search .input { padding-left: 36px; }
+
+.notes-search-icon {
+  position: absolute;
+  left: 11px;
+  font-size: 18px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+.notes-count { font-size: 12.5px; color: var(--text-dim); }
+
+/* Category headers are a distinct band so a wall of cards still reads as
+   grouped rather than as one undifferentiated pile. */
+.notes-section { margin-bottom: 26px; }
+
+.notes-section-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.notes-section-head:hover { border-color: var(--accent); }
+
+.notes-section-caret {
+  font-size: 20px;
+  color: var(--text-dim);
+  transition: transform .16s ease;
+}
+
+.notes-section-head.is-collapsed .notes-section-caret { transform: rotate(-90deg); }
+
+.notes-section-icon { font-size: 18px; color: var(--text-dim); }
+.notes-section-icon.is-pinned { color: var(--warn); }
+
+.notes-section-name {
+  font-size: 14px;
+  font-weight: 680;
+  letter-spacing: -.01em;
+}
+
+.notes-section-count {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.notes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.note-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--note-accent, var(--border));
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  transition: border-color .12s ease, transform .12s ease, box-shadow .12s ease;
+}
+
+.note-card:hover {
+  border-color: var(--accent);
+  border-left-color: var(--note-accent, var(--accent));
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(16, 32, 48, .10);
+}
+
+.note-card-head { display: flex; align-items: center; gap: 8px; }
+.note-type-icon { font-size: 17px; color: var(--text-dim); flex: 0 0 auto; }
+
+.note-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 640;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-pin { font-size: 15px; color: var(--warn); flex: 0 0 auto; }
+
+.note-body {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+}
+
+.note-body.is-empty { font-style: italic; opacity: .6; }
+
+.note-progress {
+  height: 5px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.note-progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--accent);
+  transition: width .25s ease;
+}
+
+.note-progress-text { font-size: 11px; color: var(--text-dim); }
+
+.note-checks { display: flex; flex-direction: column; gap: 3px; }
+
+.note-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.note-check input { margin-top: 2px; accent-color: var(--accent); flex: 0 0 auto; }
+.note-check-text { line-height: 1.4; }
+.note-check.is-done .note-check-text { text-decoration: line-through; opacity: .5; }
+
+.note-more { font-size: 11.5px; color: var(--text-dim); padding-left: 22px; }
+.note-labels { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* ---------- Note editor ---------- */
+
+.note-textarea { min-height: 180px; font-size: 14px; line-height: 1.6; }
+
+.checklist-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.checklist-row { display: flex; align-items: center; gap: 8px; }
+.checklist-row input[type=checkbox] { accent-color: var(--accent); flex: 0 0 auto; }
+.checklist-row.is-done .checklist-text { text-decoration: line-through; opacity: .55; }
+.checklist-text { flex: 1; }
+.checklist-add { align-self: flex-start; margin-top: 4px; }
+
+.note-pin-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  margin-top: 4px;
+}
+
+.note-pin-toggle input { accent-color: var(--accent); }

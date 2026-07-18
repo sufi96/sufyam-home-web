@@ -115,6 +115,42 @@ export const TABS = [
     listColumns: ['category_id', 'monthly_limit'],
   },
   {
+    // Notes are web-first: the Dart SheetSchema doesn't know this tab yet, and
+    // that's safe — the phone's pull skips changelog entries for tabs it can't
+    // resolve (sync_engine.dart:212) and its push only walks its own schema
+    // list, so it neither breaks nor touches these rows.
+    //
+    // `content` holds the body: plain text for a note, a JSON array of
+    // { text, done } for a checklist. Keeping it in one cell means the row
+    // shape never has to change as new note types are added.
+    box: 'notes',
+    tab: 'Notes',
+    label: 'Notes',
+    columns: [
+      'id', 'title', 'type', 'category', 'content', 'labels',
+      'is_encrypted', 'pinned', 'sort_order', 'color_hex', ...AUDIT,
+    ],
+    title: (r) => r.title,
+    fields: [
+      { key: 'title', label: 'Title', type: 'text', required: true },
+      { key: 'type', label: 'Type', type: 'select', options: ['note', 'checklist'], default: 'note' },
+      { key: 'category', label: 'Category', type: 'text' },
+      { key: 'content', label: 'Content', type: 'textarea' },
+      { key: 'labels', label: 'Labels', type: 'labels' },
+      { key: 'pinned', label: 'Pinned', type: 'text' },
+      { key: 'sort_order', label: 'Sort order', type: 'number', default: 0 },
+      { key: 'color_hex', label: 'Colour', type: 'text' },
+    ],
+    listColumns: ['title', 'type', 'category', 'labels'],
+    sort: (a, b) => {
+      const pin = (parseBool(b.pinned) ? 1 : 0) - (parseBool(a.pinned) ? 1 : 0);
+      if (pin !== 0) return pin;
+      const order = parseNum(a.sort_order) - parseNum(b.sort_order);
+      if (order !== 0) return order;
+      return String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
+    },
+  },
+  {
     box: 'taxonomy',
     tab: 'Taxonomy',
     label: 'Taxonomy',
