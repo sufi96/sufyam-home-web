@@ -1,0 +1,8 @@
+# Nothing to build, so almost nothing to ignore.
+.DS_Store
+Thumbs.db
+*.log
+
+# Never commit credentials. Client id + sheet id live in localStorage, entered
+# through the Settings screen — not in any file here.
+secrets.js
