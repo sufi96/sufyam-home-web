@@ -34,13 +34,16 @@ const INDENT_PX = 26;
 const DEPTH_NAMES = ['category', 'subcategory', 'sub-subcategory'];
 
 export function renderCategories(container) {
-  let activeType = localStorage.getItem('sufyam.cat.type') || 'expense';
+  // No expense/income filter: this household only tracks spending, and hiding
+  // rows behind a tab meant a mistyped `type` made a category vanish.
   let query = '';
   let saving = false;
   let selectedId = null;
   let rollUp = true; // include descendants' transactions in the right pane
   let sortKey = localStorage.getItem('sufyam.txn.sort') || 'date';
   let sortDir = localStorage.getItem('sufyam.txn.dir') || 'desc';
+  const picked = new Set();   // checked transaction ids
+  let lastPickedIndex = -1;   // anchor for shift-click ranges
 
   // Buffered edits: the tree as the user has arranged it, plus renames.
   let working = [];              // [{ id, depth }]
@@ -57,7 +60,7 @@ export function renderCategories(container) {
   // ---------- model ----------
 
   function buildTree() {
-    const ofType = repo.rows('Categories').filter((c) => (c.type || 'expense') === activeType);
+    const ofType = repo.rows('Categories');
     const live = new Map(ofType.map((c) => [c.id, c]));
     const kids = new Map();
     for (const cat of ofType) {
@@ -166,21 +169,11 @@ export function renderCategories(container) {
     const dirty = dirtyRows();
 
     treePane.append(el('div', { class: 'toolbar' }, [
-      el('div', { class: 'segmented' }, TYPES.map((t) => el('button', {
-        class: `segmented-btn${t.key === activeType ? ' is-active' : ''}`,
-        text: t.label,
-        onclick: () => withFlush(() => {
-          activeType = t.key;
-          localStorage.setItem('sufyam.cat.type', t.key);
-          selectedId = null;
-          syncWorking();
-          paintAll();
-        }),
-      }))),
+      el('span', { class: 'pane-title', text: 'Categories' }),
       el('input', {
         class: 'input search',
         type: 'search',
-        placeholder: 'Search…',
+        placeholder: 'Search categories…',
         value: query,
         oninput: (e) => { query = e.target.value.toLowerCase(); paintTree(); },
       }),
@@ -188,7 +181,7 @@ export function renderCategories(container) {
       el('button', {
         class: 'btn btn-sm',
         text: '+ New',
-        onclick: () => withFlush(() => openCategoryForm({ type: activeType }, afterWrite)),
+        onclick: () => withFlush(() => openCategoryForm({}, afterWrite)),
       }),
     ]));
 
@@ -244,11 +237,11 @@ export function renderCategories(container) {
     if (!visible.length) {
       treePane.append(emptyState(
         '🏷',
-        working.length ? 'No categories match.' : `No ${activeType} categories yet.`,
+        working.length ? 'No categories match.' : 'No categories yet.',
         el('button', {
           class: 'btn',
           text: '+ New category',
-          onclick: () => openCategoryForm({ type: activeType }, afterWrite),
+          onclick: () => openCategoryForm({}, afterWrite),
         }),
       ));
       return;
@@ -290,6 +283,7 @@ export function renderCategories(container) {
       // the dblclick-to-rename listener would never fire.
       onclick: (e) => {
         if (e.target.closest('input, button')) return;
+        if (selectedId !== id) { picked.clear(); lastPickedIndex = -1; }
         selectedId = id;
         for (const other of treePane.querySelectorAll('.cat-row')) {
           other.classList.toggle('is-selected', other.dataset.id === id);
@@ -403,12 +397,193 @@ export function renderCategories(container) {
           ])
         : null,
 
+      txns.length ? buildBulkBar(txns) : null,
+
       txns.length
-        ? el('div', { class: 'txn-list' }, txns.map((t) => buildTxnRow(t, cat)))
+        ? el('label', { class: 'select-all' }, [
+            el('input', {
+              type: 'checkbox',
+              checked: picked.size === txns.length || null,
+              onchange: (e) => {
+                if (e.target.checked) txns.forEach((t) => picked.add(t.id));
+                else picked.clear();
+                paintDetail();
+              },
+            }),
+            picked.size ? `${picked.size} of ${txns.length} selected` : 'Select all',
+          ])
+        : null,
+
+      txns.length
+        ? el('div', { class: 'txn-list' }, txns.map((t, i) => buildTxnRow(t, cat, i, txns)))
         : emptyState('📭', rollUp && hasChildren
           ? 'No transactions in this category or its subcategories.'
           : 'No transactions in this category.'),
     ]));
+  }
+
+  // ---------- bulk selection ----------
+
+  /**
+   * Bulk actions over the checked transactions. Each goes through
+   * repo.saveMany(), so re-categorising fifty rows is two API calls rather
+   * than a hundred — which is what makes repairing imported data practical.
+   */
+  function buildBulkBar(txns) {
+    const chosen = txns.filter((t) => picked.has(t.id));
+    if (!chosen.length) return null;
+    const total = chosen.reduce((s, t) => s + parseNum(t.amount), 0);
+
+    const run = async (fn) => {
+      try {
+        await fn();
+        picked.clear();
+        afterWrite();
+      } catch (err) {
+        toast(err.message, { error: true });
+      }
+    };
+
+    return el('div', { class: 'bulk-bar' }, [
+      el('span', { class: 'bulk-count', text: String(chosen.length) }),
+      el('span', { class: 'bulk-text', text: `selected · ${fmtMoney(total)}` }),
+      el('div', { style: 'flex:1' }),
+      el('button', {
+        class: 'btn btn-sm',
+        text: 'Move to…',
+        onclick: () => openBulkCategory(chosen, run),
+      }),
+      el('button', {
+        class: 'btn btn-ghost btn-sm',
+        text: 'Labels…',
+        onclick: () => openBulkLabels(chosen, run),
+      }),
+      el('button', {
+        class: 'btn btn-danger btn-sm',
+        text: 'Delete',
+        onclick: async () => {
+          const ok = await confirmDialog({
+            title: `Delete ${chosen.length} transaction${chosen.length === 1 ? '' : 's'}?`,
+            message: `${fmtMoney(total)} across ${chosen.length} row`
+              + `${chosen.length === 1 ? '' : 's'} will be marked deleted.`,
+            note: 'Nothing is erased — the rows stay in the sheet and can be restored.',
+            confirmLabel: 'Delete them',
+          });
+          if (!ok) return;
+          run(() => repo.saveMany('Transactions',
+            chosen.map((t) => ({ ...t, is_deleted: true }))));
+        },
+      }),
+      el('button', {
+        class: 'btn btn-ghost btn-sm',
+        text: 'Clear',
+        onclick: () => { picked.clear(); paintDetail(); },
+      }),
+    ]);
+  }
+
+  function openBulkCategory(chosen, run) {
+    let target = '';
+    const select = el('select', { class: 'select', onchange: (e) => { target = e.target.value; } });
+    select.append(el('option', { value: '', text: '— choose a category —' }));
+    for (const { cat, depth } of buildTree().flat) {
+      select.append(el('option', {
+        value: cat.id,
+        text: `${'　'.repeat(depth)}${depth ? '↳ ' : ''}${cat.name || cat.id}`,
+      }));
+    }
+
+    openModal({
+      title: `Move ${chosen.length} transaction${chosen.length === 1 ? '' : 's'}`,
+      icon: '📁',
+      render: (body) => {
+        body.append(field('Move to', select, {
+          hint: 'Every selected transaction is re-pointed at this category.',
+        }));
+        body.append(el('div', { class: 'bulk-preview' },
+          chosen.slice(0, 6).map((t) => el('div', { class: 'bulk-preview-row' }, [
+            el('span', { class: 'bulk-preview-amount', text: fmtMoney(t.amount) }),
+            el('span', { class: 'bulk-preview-note', text: t.notes || 'No note' }),
+          ]))));
+        if (chosen.length > 6) {
+          body.append(el('div', { class: 'hint', text: `…and ${chosen.length - 6} more` }));
+        }
+      },
+      actions: (close) => {
+        const go = el('button', { class: 'btn', text: 'Move them' });
+        go.addEventListener('click', () => {
+          if (!target) { toast('Pick a category first', { error: true }); return; }
+          close();
+          run(async () => {
+            await repo.saveMany('Transactions',
+              chosen.map((t) => ({ ...t, category_id: target })));
+            toast(`Moved ${chosen.length} transaction${chosen.length === 1 ? '' : 's'}`);
+          });
+        });
+        return [el('button', { class: 'btn btn-ghost', text: 'Cancel', onclick: close }), go];
+      },
+    });
+  }
+
+  function openBulkLabels(chosen, run) {
+    let adding = [];
+    const removing = new Set();
+
+    const present = new Map();
+    for (const t of chosen) {
+      for (const raw of String(t.labels || '').split('|')) {
+        const name = raw.trim();
+        if (name) present.set(name, (present.get(name) || 0) + 1);
+      }
+    }
+
+    openModal({
+      title: `Labels on ${chosen.length} transaction${chosen.length === 1 ? '' : 's'}`,
+      icon: '🏷',
+      render: (body) => {
+        body.append(field('Add these labels', labelPicker('', (names) => { adding = names; }), {
+          hint: 'Added to every selected transaction, keeping labels they already have.',
+        }));
+
+        if (present.size) {
+          body.append(field('Remove existing labels', el('div', { class: 'label-chips' },
+            [...present.entries()]
+              .sort((a, b) => b[1] - a[1])
+              .map(([name, n]) => el('button', {
+                type: 'button',
+                class: 'label-chip',
+                onclick: (e) => {
+                  const on = removing.has(name);
+                  if (on) removing.delete(name); else removing.add(name);
+                  e.currentTarget.classList.toggle('is-removing', !on);
+                },
+              }, [name, el('span', { class: 'label-chip-count', text: String(n) })])),
+          ), { hint: 'Click a label to mark it for removal.' }));
+        }
+      },
+      actions: (close) => {
+        const go = el('button', { class: 'btn', text: 'Apply' });
+        go.addEventListener('click', () => {
+          if (!adding.length && !removing.size) {
+            toast('Nothing to add or remove', { error: true });
+            return;
+          }
+          close();
+          run(async () => {
+            const updates = chosen.map((t) => {
+              const current = String(t.labels || '').split('|')
+                .map((x) => x.trim()).filter(Boolean);
+              const kept = current.filter((x) => !removing.has(x));
+              return { ...t, labels: [...new Set([...kept, ...adding])].join('|') };
+            });
+            await repo.saveMany('Transactions', updates);
+            await taxonomy.ensure(taxonomy.KIND_LABEL, adding);
+            toast(`Updated labels on ${chosen.length} transaction${chosen.length === 1 ? '' : 's'}`);
+          });
+        });
+        return [el('button', { class: 'btn btn-ghost', text: 'Cancel', onclick: close }), go];
+      },
+    });
   }
 
   /** Sort controls, sized to line up with the tree toolbar opposite it. */
@@ -444,15 +619,44 @@ export function renderCategories(container) {
    * for. The note is secondary, and the parent category is visually distinct
    * from labels — merging them made it unclear which was which.
    */
-  function buildTxnRow(txn, selectedCat) {
+  function buildTxnRow(txn, selectedCat, index, allTxns) {
     const cat = repo.byId('Categories', txn.category_id);
     const labels = String(txn.labels || '').split('|').map((s) => s.trim()).filter(Boolean);
     const foreign = cat && cat.id !== selectedCat.id;
+    const isPicked = picked.has(txn.id);
+
+    const toggle = (e) => {
+      // Shift extends from the last checkbox touched, so a run of rows to
+      // repair can be grabbed in two clicks instead of twenty.
+      if (e.shiftKey && lastPickedIndex >= 0) {
+        const [from, to] = [lastPickedIndex, index].sort((a, b) => a - b);
+        for (let i = from; i <= to; i++) picked.add(allTxns[i].id);
+      } else if (isPicked) {
+        picked.delete(txn.id);
+      } else {
+        picked.add(txn.id);
+      }
+      lastPickedIndex = index;
+      paintDetail();
+    };
 
     return el('div', {
-      class: 'txn-row',
-      onclick: () => openTransaction(txn, afterWrite),
+      class: `txn-row${isPicked ? ' is-picked' : ''}`,
+      onclick: (e) => {
+        if (e.target.closest('.txn-check')) return;
+        // Once a selection exists, plain clicks extend it rather than opening
+        // a modal — otherwise multi-select is a constant misclick trap.
+        if (picked.size) { toggle(e); return; }
+        openTransaction(txn, afterWrite);
+      },
     }, [
+      el('label', { class: 'txn-check' }, [
+        el('input', {
+          type: 'checkbox',
+          checked: isPicked || null,
+          onclick: (e) => { e.stopPropagation(); toggle(e); },
+        }),
+      ]),
       el('div', { class: 'txn-lead' }, [
         el('div', { class: 'txn-amount', text: fmtMoney(txn.amount) }),
         el('div', { class: 'txn-date', text: fmtDate(txn.transaction_date) }),
@@ -542,7 +746,7 @@ export function renderCategories(container) {
             await repo.save('Categories', {
               ...cat,
               parent_id: select.value,
-              sort_order: nextSortOrder(select.value, cat.type || activeType),
+              sort_order: nextSortOrder(select.value),
             });
             toast(`"${cat.name}" moved`);
             afterWrite();
@@ -924,7 +1128,7 @@ function openCategoryForm(cat, onSaved) {
       const rebuildParents = () => {
         clear(parentSelect);
         parentSelect.append(el('option', { value: '', text: '— top level —' }));
-        const ofType = repo.rows('Categories').filter((c) => (c.type || 'expense') === values.type);
+        const ofType = repo.rows('Categories');
         const live = new Map(ofType.map((c) => [c.id, c]));
         const inTree = ofType.filter((c) => !c.parent_id || live.has(c.parent_id));
         const walk = (parentId, depth) => {
@@ -951,15 +1155,7 @@ function openCategoryForm(cat, onSaved) {
           placeholder: 'e.g. Groceries',
           oninput: (e) => { values.name = e.target.value; },
         }), { required: true, error: errorNode }),
-        el('div', { class: 'field-row' }, [
-          field('Type', el('select', {
-            class: 'select',
-            onchange: (e) => { values.type = e.target.value; values.parent_id = ''; rebuildParents(); },
-          }, TYPES.map((t) => el('option', {
-            value: t.key, text: t.label, selected: values.type === t.key,
-          })))),
-          field('Colour', el('div', { class: 'colour-field' }, [swatch, hexInput])),
-        ]),
+        field('Colour', el('div', { class: 'colour-field' }, [swatch, hexInput])),
         field('Parent', parentSelect, { hint: 'Leave as top level for a main category.' }),
         field('Icon', iconPicker(values.icon_key, (key) => { values.icon_key = key; }), {
           hint: isKnownIcon(values.icon_key) || !values.icon_key
@@ -979,35 +1175,19 @@ function openCategoryForm(cat, onSaved) {
         btn.disabled = true;
         btn.textContent = 'Saving…';
         try {
-          const typeChanged = isEdit && (cat.type || 'expense') !== values.type;
           await repo.save('Categories', {
             ...(isEdit ? cat : {}),
             name: values.name.trim(),
-            type: values.type,
+            // Kept at whatever it was (or 'expense' for new rows) — the phone's
+            // model requires it even though this view no longer splits on it.
+            type: cat.type || 'expense',
             parent_id: values.parent_id,
             color_hex: values.color_hex,
             icon_key: values.icon_key,
             sort_order: isEdit
               ? parseNum(cat.sort_order, 0)
-              : nextSortOrder(values.parent_id, values.type),
+              : nextSortOrder(values.parent_id),
           });
-
-          if (typeChanged) {
-            const moved = [];
-            const cascade = (id) => {
-              for (const c of repo.rows('Categories')) {
-                if (c.parent_id === id && (c.type || 'expense') !== values.type) {
-                  moved.push({ ...c, type: values.type });
-                  cascade(c.id);
-                }
-              }
-            };
-            cascade(cat.id);
-            if (moved.length) {
-              await repo.saveMany('Categories', moved);
-              toast(`Moved ${moved.length} descendant${moved.length === 1 ? '' : 's'} too`);
-            }
-          }
 
           toast(isEdit ? 'Saved' : 'Created');
           close();
@@ -1095,9 +1275,9 @@ function usageCounts() {
   return counts;
 }
 
-function nextSortOrder(parentId, type) {
+function nextSortOrder(parentId) {
   const siblings = repo.rows('Categories').filter(
-    (c) => (c.parent_id || '') === (parentId || '') && (c.type || 'expense') === type,
+    (c) => (c.parent_id || '') === (parentId || ''),
   );
   return siblings.reduce((max, c) => Math.max(max, parseNum(c.sort_order)), 0) + 1;
 }

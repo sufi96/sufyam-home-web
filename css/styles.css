@@ -788,6 +788,99 @@ td.actions { text-align: right; white-space: nowrap; }
 .txn-chevron { color: var(--text-dim); opacity: .4; font-size: 18px; flex: 0 0 auto; }
 .txn-row:hover .txn-chevron { opacity: .9; }
 
+/* ---------- Multi-select ---------- */
+
+.txn-check {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 2px;
+  cursor: pointer;
+  opacity: .35;
+  transition: opacity .12s ease;
+}
+
+.txn-check input { cursor: pointer; width: 15px; height: 15px; accent-color: var(--accent); }
+.txn-row:hover .txn-check,
+.txn-row.is-picked .txn-check { opacity: 1; }
+
+.txn-row.is-picked { background: var(--accent-soft); }
+.txn-row.is-picked:hover { background: color-mix(in srgb, var(--accent-soft) 80%, var(--accent)); }
+
+.select-all {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.select-all input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  animation: slide-in .15s ease-out;
+}
+
+.bulk-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 680;
+}
+
+.bulk-text { font-size: 13px; font-weight: 560; color: var(--accent); }
+
+.bulk-preview {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.bulk-preview-row {
+  display: flex;
+  gap: 12px;
+  padding: 7px 11px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.bulk-preview-row:last-child { border-bottom: 0; }
+.bulk-preview-amount { font-weight: 620; font-variant-numeric: tabular-nums; min-width: 82px; }
+
+.bulk-preview-note {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Labels marked for removal in the bulk editor. */
+.label-chip.is-removing {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  text-decoration: line-through;
+}
+
 .audit-note {
   margin-top: 16px;
   padding-top: 14px;
