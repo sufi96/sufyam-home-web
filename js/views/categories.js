@@ -1,15 +1,27 @@
 // Dedicated Categories view.
 //
-// Categories are a two-level tree ordered by `sort_order`, which the generic
-// table view renders as a flat list with the hierarchy invisible and ordering
-// only editable by typing numbers into a modal. This view shows the tree, and
-// makes reordering a drag instead of arithmetic.
+// Categories are a two-level tree ordered by `sort_order`. The generic table
+// view renders that flat, hiding the hierarchy, with ordering editable only by
+// typing numbers into a modal. This view shows the tree and makes reordering a
+// drag.
+//
+// Drag is implemented with pointer events rather than HTML5 drag-and-drop:
+// native DnD gives no control over the drop position mid-gesture, so rows
+// can't be animated out of the way. Here every row is one flat list, the
+// dragged row (plus its children) is lifted out, and the remaining rows are
+// translated to open a gap — which CSS transitions animate for free.
+//
+// Depth is chosen by horizontal position, the way outliners do it: drag right
+// past the indent threshold to make the row a subcategory of whatever sits
+// above it, keep it left to leave it top-level. That's what disambiguates
+// "last child of the group above" from "new top-level category" when you drop
+// on the boundary between two groups.
 //
 // Every write still goes through repo.save(), so audit stamps, soft deletes
-// and _Changelog rows are handled exactly as everywhere else.
+// and _Changelog rows behave exactly as everywhere else.
 
 import * as repo from '../repo.js';
-import { parseNum, parseBool } from '../schema.js';
+import { parseNum } from '../schema.js';
 import { el, clear, toast, openModal, confirmDialog, emptyState } from '../ui.js';
 
 const TYPES = [
@@ -17,10 +29,13 @@ const TYPES = [
   { key: 'income', label: 'Income' },
 ];
 
+const INDENT_PX = 30;      // visual indent of one nesting level
+const INDENT_TRIGGER = 18; // horizontal travel before a row becomes a child
+
 export function renderCategories(container) {
   let activeType = localStorage.getItem('sufyam.cat.type') || 'expense';
   let query = '';
-  let busy = false;
+  let saving = false;
 
   const listWrap = el('div');
 
@@ -64,35 +79,46 @@ export function renderCategories(container) {
     ]);
   }
 
+  /** Flattens the tree into the single ordered list the drag logic works on. */
+  function buildFlat() {
+    const ofType = repo.rows('Categories').filter((c) => (c.type || 'expense') === activeType);
+    const parents = ofType.filter((c) => !c.parent_id).sort(bySortOrder);
+    const known = new Set(ofType.map((c) => c.id));
+
+    const flat = [];
+    for (const parent of parents) {
+      flat.push({ cat: parent, depth: 0 });
+      for (const child of ofType.filter((c) => c.parent_id === parent.id).sort(bySortOrder)) {
+        flat.push({ cat: child, depth: 1 });
+      }
+    }
+    const orphans = ofType.filter((c) => c.parent_id && !known.has(c.parent_id));
+    return { flat, orphans };
+  }
+
   function paintList() {
     clear(listWrap);
-
-    const all = repo.rows('Categories');
-    const ofType = all.filter((c) => (c.type || 'expense') === activeType);
-    const parents = ofType
-      .filter((c) => !c.parent_id)
-      .sort(bySortOrder);
-
-    const childrenOf = (id) => ofType.filter((c) => c.parent_id === id).sort(bySortOrder);
-
-    // Orphans: a parent_id pointing at something deleted or of another type.
-    const parentIds = new Set(all.map((c) => c.id));
-    const orphans = ofType.filter(
-      (c) => c.parent_id && (!parentIds.has(c.parent_id) || !ofType.some((p) => p.id === c.parent_id)),
-    );
-
+    const { flat, orphans } = buildFlat();
     const usage = usageCounts();
+    const filtering = Boolean(query);
 
-    const visible = (c) => !query
-      || (c.name || '').toLowerCase().includes(query)
-      || childrenOf(c.id).some((k) => (k.name || '').toLowerCase().includes(query));
+    const visible = filtering
+      ? flat.filter(({ cat, depth }, i) => {
+          if ((cat.name || '').toLowerCase().includes(query)) return true;
+          // keep a parent visible when one of its children matches
+          if (depth === 0) {
+            return flat.slice(i + 1).some((n) => n.depth === 1
+              && n.cat.parent_id === cat.id
+              && (n.cat.name || '').toLowerCase().includes(query));
+          }
+          return false;
+        })
+      : flat;
 
-    const shown = parents.filter(visible);
-
-    if (!shown.length && !orphans.length) {
+    if (!visible.length && !orphans.length) {
       listWrap.append(emptyState(
         '🏷',
-        all.length ? 'No categories match.' : `No ${activeType} categories yet.`,
+        flat.length ? 'No categories match.' : `No ${activeType} categories yet.`,
         el('button', {
           class: 'btn',
           text: '+ New category',
@@ -103,162 +129,248 @@ export function renderCategories(container) {
     }
 
     listWrap.append(el('div', {
-      class: 'hint',
       style: 'margin-bottom:10px;color:var(--text-dim);font-size:12px',
-      text: '⠿ Drag a row to reorder. Click a name to rename it.',
+      text: filtering
+        ? 'Clear the search to reorder — dragging is disabled while filtering.'
+        : '⠿ Drag to reorder. Drag right to make it a subcategory, left to make it top-level.',
     }));
 
-    const tree = el('div', { class: 'cat-tree' });
-    for (const parent of shown) {
-      tree.append(buildGroup(parent, childrenOf(parent.id), usage));
+    const list = el('div', { class: 'cat-list' });
+    for (const item of visible) {
+      list.append(buildRow(item, usage, { draggable: !filtering }));
     }
+    listWrap.append(list);
+
+    if (!filtering) attachDrag(list);
+
     if (orphans.length) {
-      tree.append(el('div', {
+      listWrap.append(el('div', {
         class: 'card',
         style: 'margin-top:16px;border-color:var(--warn)',
       }, [
         el('h2', { class: 'card-title', style: 'color:var(--warn)', text: 'Orphaned — parent is missing' }),
-        ...orphans.map((c) => buildRow(c, usage, { depth: 0, draggable: false })),
+        ...orphans.map((cat) => buildRow({ cat, depth: 0 }, usage, { draggable: false })),
       ]));
     }
-    listWrap.append(tree);
   }
 
-  function buildGroup(parent, children, usage) {
-    const group = el('div', {
-      class: 'card',
-      style: 'margin-bottom:12px;padding:6px 10px',
-    });
-
-    group.append(buildRow(parent, usage, { depth: 0, draggable: true, group: 'root' }));
-
-    const childList = el('div', { class: 'cat-children', 'data-parent': parent.id });
-    for (const child of children) {
-      childList.append(buildRow(child, usage, { depth: 1, draggable: true, group: parent.id }));
-    }
-    childList.append(el('button', {
-      class: 'btn btn-ghost btn-sm',
-      style: 'margin:4px 0 6px 42px;border:0;color:var(--text-dim)',
-      text: '+ Add subcategory',
-      onclick: () => openCategoryForm({ type: activeType, parent_id: parent.id }, paint),
-    }));
-
-    group.append(childList);
-    enableDragReorder(childList, parent.id);
-    return group;
-  }
-
-  function buildRow(cat, usage, { depth, draggable, group }) {
+  function buildRow({ cat, depth }, usage, { draggable }) {
     const count = usage.get(cat.id) || 0;
     const colour = normaliseHex(cat.color_hex);
 
     const nameNode = el('span', {
-      style: 'font-weight:550;cursor:text;padding:2px 4px;border-radius:4px',
+      class: 'cat-name',
       text: cat.name || '(unnamed)',
       title: 'Click to rename',
     });
     nameNode.addEventListener('click', () => startInlineRename(nameNode, cat, paintList));
 
-    const row = el('div', {
-      class: 'cat-row',
+    return el('div', {
+      class: `cat-row${depth ? ' is-child' : ' is-parent'}`,
       'data-id': cat.id,
-      draggable: draggable ? 'true' : null,
-      style: `display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:8px;`
-        + `margin-left:${depth * 28}px;${depth ? '' : 'font-size:15px;'}`,
+      'data-depth': String(depth),
+      style: `--indent:${depth * INDENT_PX}px`,
     }, [
       draggable
-        ? el('span', {
-            class: 'drag-handle',
-            style: 'cursor:grab;color:var(--text-dim);user-select:none',
-            text: '⠿',
-          })
-        : el('span', { style: 'width:9px' }),
+        ? el('span', { class: 'drag-handle', text: '⠿', title: 'Drag to reorder' })
+        : el('span', { style: 'width:10px' }),
       el('span', {
-        style: `width:12px;height:12px;border-radius:50%;flex:0 0 auto;`
-          + `background:${colour || 'var(--border)'};border:1px solid var(--border)`,
+        class: 'cat-dot',
+        style: `background:${colour || 'var(--border)'}`,
       }),
       nameNode,
-      count
-        ? el('span', { class: 'chip', text: `${count} txn${count === 1 ? '' : 's'}` })
-        : null,
-      el('div', { class: 'spacer', style: 'flex:1' }),
+      count ? el('span', { class: 'chip', text: `${count} txn${count === 1 ? '' : 's'}` }) : null,
+      el('span', { style: 'flex:1' }),
       el('button', {
-        class: 'btn btn-ghost btn-sm',
+        class: 'btn btn-ghost btn-sm cat-action',
         text: 'Edit',
         onclick: () => openCategoryForm(cat, paint),
       }),
       el('button', {
-        class: 'btn btn-ghost btn-sm',
+        class: 'btn btn-danger btn-sm cat-action',
         text: '🗑',
         title: 'Delete',
         onclick: () => deleteCategory(cat, count, paint),
       }),
     ]);
+  }
 
-    return row;
+  // ---------- drag ----------
+
+  function attachDrag(list) {
+    list.addEventListener('pointerdown', (e) => {
+      const handle = e.target.closest('.drag-handle');
+      if (!handle || saving || e.button !== 0) return;
+      e.preventDefault();
+      startDrag(list, handle.closest('.cat-row'), e);
+    });
+  }
+
+  function startDrag(list, row, downEvent) {
+    const rows = [...list.querySelectorAll('.cat-row')];
+    const index = rows.indexOf(row);
+    const depth = Number(row.dataset.depth);
+
+    // A parent travels with its children; a child moves alone.
+    let span = 1;
+    if (depth === 0) {
+      while (index + span < rows.length && rows[index + span].dataset.depth === '1') span++;
+    }
+    const group = rows.slice(index, index + span);
+    const rest = rows.filter((r) => !group.includes(r));
+    const hasChildren = span > 1;
+
+    // Geometry captured before anything moves.
+    const listRect = list.getBoundingClientRect();
+    const metrics = rest.map((r) => {
+      const rect = r.getBoundingClientRect();
+      return { el: r, top: rect.top - listRect.top, height: rect.height };
+    });
+    const groupHeight = group.reduce((h, r) => h + r.getBoundingClientRect().height, 0);
+    const startY = downEvent.clientY;
+    const startX = downEvent.clientX;
+    const baseIndent = depth * INDENT_PX;
+
+    group.forEach((r) => r.classList.add('is-dragging'));
+    rest.forEach((r) => r.classList.add('is-shifting'));
+    list.classList.add('is-dragging-active');
+    document.body.style.userSelect = 'none';
+
+    const hint = el('div', { class: 'drag-hint' });
+    document.body.append(hint);
+
+    let insertAt = metrics.findIndex((m) => m.el === rest[0]) === -1 ? 0 : index;
+    let dropDepth = depth;
+
+    const onMove = (e) => {
+      const dy = e.clientY - startY;
+      const dx = e.clientX - startX;
+      const rect = list.getBoundingClientRect();
+      const pointerY = e.clientY - rect.top;
+
+      // How many remaining rows sit above the pointer.
+      insertAt = 0;
+      for (const m of metrics) {
+        if (pointerY > m.top + m.height / 2) insertAt++;
+        else break;
+      }
+
+      // Depth from horizontal travel, then clamped to what's legal.
+      const above = metrics[insertAt - 1];
+      const aboveDepth = above ? Number(above.el.dataset.depth) : -1;
+      const wantsIndent = baseIndent + dx > INDENT_TRIGGER;
+      const canIndent = above !== undefined && !hasChildren;
+      dropDepth = wantsIndent && canIndent ? 1 : 0;
+
+      // Nothing can nest under a row that is itself a child unless they end up
+      // sharing a parent — which is the same depth, so this stays 0 or 1.
+      if (dropDepth === 1 && aboveDepth === -1) dropDepth = 0;
+
+      // A top-level row dropped between a parent and its children would split
+      // that group: everything after the insertion point would be re-parented
+      // onto the row being dropped. Snap past the remaining children so it
+      // lands on a group boundary instead.
+      if (dropDepth === 0) {
+        while (insertAt < metrics.length
+          && Number(metrics[insertAt].el.dataset.depth) === 1) insertAt++;
+      }
+
+      group.forEach((r) => {
+        r.style.transform = `translate(${dropDepth * INDENT_PX - baseIndent}px, ${dy}px)`;
+      });
+      metrics.forEach((m, i) => {
+        m.el.style.transform = i >= insertAt ? `translateY(${groupHeight}px)` : '';
+      });
+
+      const parentName = dropDepth === 1 ? nameOfParentFor(above) : '';
+      hint.textContent = dropDepth === 1
+        ? `↳ subcategory of ${parentName}`
+        : '↤ top-level category';
+      hint.classList.toggle('is-child', dropDepth === 1);
+      hint.style.left = `${e.clientX + 16}px`;
+      hint.style.top = `${e.clientY + 18}px`;
+    };
+
+    const onUp = async () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      hint.remove();
+      document.body.style.userSelect = '';
+      list.classList.remove('is-dragging-active');
+      group.forEach((r) => { r.classList.remove('is-dragging'); r.style.transform = ''; });
+      metrics.forEach((m) => { m.el.classList.remove('is-shifting'); m.el.style.transform = ''; });
+
+      const order = [
+        ...rest.slice(0, insertAt).map((r) => r.dataset.id),
+        ...group.map((r) => r.dataset.id),
+        ...rest.slice(insertAt).map((r) => r.dataset.id),
+      ];
+      const depths = new Map(rest.map((r) => [r.dataset.id, Number(r.dataset.depth)]));
+      depths.set(group[0].dataset.id, dropDepth);
+      group.slice(1).forEach((r) => depths.set(r.dataset.id, 1));
+
+      await persist(order, depths);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  }
+
+  function nameOfParentFor(aboveMetric) {
+    if (!aboveMetric) return '';
+    const cat = repo.byId('Categories', aboveMetric.el.dataset.id);
+    if (!cat) return '';
+    if (!cat.parent_id) return cat.name || '';
+    const parent = repo.byId('Categories', cat.parent_id);
+    return parent?.name || '';
   }
 
   /**
-   * HTML5 drag reorder within one sibling list. On drop, sort_order is
-   * rewritten to 1..n and only the rows whose number actually changed are
-   * saved — a reorder of two adjacent items costs two writes, not n.
+   * Walks the new flat order, derives each row's parent_id and sort_order,
+   * and saves only the rows that actually changed. Reordering two adjacent
+   * items costs two writes, not one per category.
    */
-  function enableDragReorder(listNode, parentId) {
-    let dragged = null;
-
-    listNode.addEventListener('dragstart', (e) => {
-      const row = e.target.closest('.cat-row');
-      if (!row) return;
-      dragged = row;
-      row.style.opacity = '.4';
-      e.dataTransfer.effectAllowed = 'move';
-    });
-
-    listNode.addEventListener('dragend', () => {
-      if (dragged) dragged.style.opacity = '';
-      dragged = null;
-      listNode.querySelectorAll('.cat-row').forEach((r) => { r.style.borderTop = ''; });
-    });
-
-    listNode.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      const over = e.target.closest('.cat-row');
-      if (!over || over === dragged || !dragged) return;
-      const rect = over.getBoundingClientRect();
-      const after = e.clientY > rect.top + rect.height / 2;
-      listNode.insertBefore(dragged, after ? over.nextSibling : over);
-    });
-
-    listNode.addEventListener('drop', async (e) => {
-      e.preventDefault();
-      if (busy) return;
-      const ids = [...listNode.querySelectorAll('.cat-row')].map((r) => r.dataset.id);
-      await persistOrder(ids, parentId);
-    });
-  }
-
-  async function persistOrder(ids, parentId) {
-    busy = true;
+  async function persist(order, depths) {
+    saving = true;
     try {
-      const changed = [];
-      ids.forEach((id, i) => {
-        const cat = repo.byId('Categories', id);
-        if (!cat) return;
-        const next = i + 1;
-        if (parseNum(cat.sort_order) !== next || cat.parent_id !== (parentId === 'root' ? '' : cat.parent_id)) {
-          changed.push({ cat, next });
-        }
-      });
-      if (!changed.length) return;
+      let currentParent = '';
+      let topCounter = 0;
+      let childCounter = 0;
+      const updates = [];
 
-      for (const { cat, next } of changed) {
-        await repo.save('Categories', { ...cat, sort_order: next });
+      for (const id of order) {
+        const cat = repo.byId('Categories', id);
+        if (!cat) continue;
+        const depth = depths.get(id) === 1 && currentParent ? 1 : 0;
+
+        let parentId;
+        let sortOrder;
+        if (depth === 0) {
+          parentId = '';
+          sortOrder = ++topCounter;
+          currentParent = id;
+          childCounter = 0;
+        } else {
+          parentId = currentParent;
+          sortOrder = ++childCounter;
+        }
+
+        if ((cat.parent_id || '') !== parentId || parseNum(cat.sort_order) !== sortOrder) {
+          updates.push({ cat, parentId, sortOrder });
+        }
       }
-      toast(`Reordered (${changed.length} updated)`);
+
+      if (!updates.length) return;
+      for (const u of updates) {
+        await repo.save('Categories', { ...u.cat, parent_id: u.parentId, sort_order: u.sortOrder });
+      }
+      toast(`Reordered — ${updates.length} updated`);
     } catch (err) {
       toast(err.message, { error: true });
     } finally {
-      busy = false;
+      saving = false;
       paintList();
     }
   }
@@ -285,10 +397,7 @@ function startInlineRename(node, cat, refresh) {
     if (done) return;
     done = true;
     const value = input.value.trim();
-    if (!commit || !value || value === original) {
-      refresh();
-      return;
-    }
+    if (!commit || !value || value === original) return refresh();
     try {
       await repo.save('Categories', { ...cat, name: value });
       toast('Renamed');
@@ -317,7 +426,6 @@ function openCategoryForm(cat, onSaved) {
     icon_key: cat.icon_key || '',
     sort_order: cat.sort_order ?? nextSortOrder(cat.parent_id || '', cat.type || 'expense'),
   };
-
   const errorNode = el('div', { class: 'error hidden' });
 
   openModal({
@@ -330,14 +438,6 @@ function openCategoryForm(cat, onSaved) {
         style: 'max-width:130px',
         oninput: (e) => { values.color_hex = e.target.value; },
       });
-
-      const nameInput = el('input', {
-        class: 'input',
-        type: 'text',
-        value: values.name,
-        oninput: (e) => { values.name = e.target.value; },
-      });
-
       const parentSelect = el('select', {
         class: 'select',
         onchange: (e) => { values.parent_id = e.target.value; },
@@ -350,24 +450,27 @@ function openCategoryForm(cat, onSaved) {
           .filter((c) => (c.type || 'expense') === values.type && !c.parent_id && c.id !== cat.id)
           .sort(bySortOrder)
           .forEach((c) => parentSelect.append(el('option', {
-            value: c.id,
-            text: c.name || c.id,
-            selected: values.parent_id === c.id,
+            value: c.id, text: c.name || c.id, selected: values.parent_id === c.id,
           })));
       };
       rebuildParents();
 
       body.append(
-        el('div', { class: 'field' }, [el('label', { text: 'Name *' }), nameInput, errorNode]),
+        el('div', { class: 'field' }, [
+          el('label', { text: 'Name *' }),
+          el('input', {
+            class: 'input',
+            type: 'text',
+            value: values.name,
+            oninput: (e) => { values.name = e.target.value; },
+          }),
+          errorNode,
+        ]),
         el('div', { class: 'field' }, [
           el('label', { text: 'Type' }),
           el('select', {
             class: 'select',
-            onchange: (e) => {
-              values.type = e.target.value;
-              values.parent_id = '';
-              rebuildParents();
-            },
+            onchange: (e) => { values.type = e.target.value; values.parent_id = ''; rebuildParents(); },
           }, TYPES.map((t) => el('option', {
             value: t.key, text: t.label, selected: values.type === t.key,
           }))),
@@ -379,7 +482,8 @@ function openCategoryForm(cat, onSaved) {
             el('input', {
               type: 'color',
               value: values.color_hex,
-              style: 'width:52px;height:38px;padding:2px;border:1px solid var(--border);border-radius:8px;background:var(--surface)',
+              style: 'width:52px;height:38px;padding:2px;border:1px solid var(--border);'
+                + 'border-radius:8px;background:var(--surface)',
               oninput: (e) => { values.color_hex = e.target.value; hexInput.value = e.target.value; },
             }),
             hexInput,
@@ -409,7 +513,6 @@ function openCategoryForm(cat, onSaved) {
         btn.textContent = 'Saving…';
         try {
           const typeChanged = isEdit && (cat.type || 'expense') !== values.type;
-
           await repo.save('Categories', {
             ...(isEdit ? cat : {}),
             name: values.name.trim(),
@@ -427,7 +530,9 @@ function openCategoryForm(cat, onSaved) {
             for (const child of children) {
               await repo.save('Categories', { ...child, type: values.type });
             }
-            if (children.length) toast(`Moved ${children.length} subcategor${children.length === 1 ? 'y' : 'ies'} too`);
+            if (children.length) {
+              toast(`Moved ${children.length} subcategor${children.length === 1 ? 'y' : 'ies'} too`);
+            }
           }
 
           toast(isEdit ? 'Saved' : 'Created');
@@ -459,8 +564,7 @@ async function deleteCategory(cat, txnCount, refresh) {
       + 'Those keep their amounts but will show an unresolved category.';
   }
 
-  const ok = await confirmDialog({ title: 'Delete category?', message });
-  if (!ok) return;
+  if (!(await confirmDialog({ title: 'Delete category?', message }))) return;
   try {
     await repo.remove('Categories', cat.id);
     toast('Deleted');
@@ -498,8 +602,5 @@ function normaliseHex(v) {
   const s = String(v || '').trim();
   if (!s) return '';
   const hex = s.startsWith('#') ? s.slice(1) : s;
-  if (!/^[0-9a-fA-F]{6}$/.test(hex)) return '';
-  return `#${hex.toLowerCase()}`;
+  return /^[0-9a-fA-F]{6}$/.test(hex) ? `#${hex.toLowerCase()}` : '';
 }
-
-export { parseBool };
