@@ -5,6 +5,7 @@ import { isConfigured } from './config.js';
 import { trySilentSignIn, getAuthState, onAuthChange, signIn } from './auth.js';
 import * as repo from './repo.js';
 import { renderEntity } from './views/entity.js';
+import { renderCategories } from './views/categories.js';
 import { renderDashboard } from './views/dashboard.js';
 import { renderSettings } from './views/settings.js';
 import { el, clear, toast, spinner } from './ui.js';
@@ -88,6 +89,7 @@ function render() {
   if (!dataReady) return;
 
   if (current === 'dashboard') renderDashboard(view);
+  else if (current === 'Categories') renderCategories(view);
   else renderEntity(view, current);
 }
 

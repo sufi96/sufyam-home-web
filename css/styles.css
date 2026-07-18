@@ -294,6 +294,17 @@ td.actions { text-align: right; white-space: nowrap; }
 .chip-danger { background: var(--danger-soft); color: var(--danger); }
 .chip-warn { background: var(--warn-soft); color: var(--warn); }
 
+/* ---------- Category tree ---------- */
+
+.cat-row { transition: background .12s ease; }
+.cat-row:hover { background: var(--surface-2); }
+.cat-row:hover .drag-handle { color: var(--text); }
+.cat-row[draggable="true"]:active { cursor: grabbing; }
+
+.cat-children .cat-row { font-size: 14px; color: var(--text); }
+
+.cat-tree .card { transition: border-color .12s ease; }
+
 /* ---------- Modal ---------- */
 
 .modal-backdrop {
