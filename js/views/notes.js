@@ -10,6 +10,8 @@
 
 import * as repo from '../repo.js';
 import * as taxonomy from '../taxonomy.js';
+import * as vault from '../vault.js';
+import { isEnvelope } from '../crypto.js';
 import { parseNum, parseBool } from '../schema.js';
 import {
   BLOCK_TYPES, parseBlocks, serializeBlocks, blocksToText,
@@ -23,6 +25,32 @@ import {
 
 const UNFILED = 'Unfiled';
 const FLUSH_DELAY = 1200;
+
+// Decrypted bodies for this session, so the tab renders and searches without
+// re-running AES for every repaint. Cleared on lock.
+const plaintext = new Map();
+
+const isSecure = (note) => isEnvelope(note.content);
+
+/** A note's readable body, or null when it's encrypted and still locked. */
+function bodyOf(note) {
+  if (!isSecure(note)) return note.content;
+  return plaintext.has(note.id) ? plaintext.get(note.id) : null;
+}
+
+async function decryptAll() {
+  plaintext.clear();
+  if (!vault.isUnlocked()) return;
+  for (const note of repo.rows('Notes')) {
+    if (note.id === vault.VAULT_ID || !isSecure(note)) continue;
+    try {
+      plaintext.set(note.id, await vault.decrypt(note.content));
+    } catch {
+      // A row encrypted under a different passphrase, or corrupted. Left out
+      // of the cache so it renders as locked rather than as an error.
+    }
+  }
+}
 
 export function renderNotes(container) {
   let query = '';
@@ -59,7 +87,7 @@ export function renderNotes(container) {
       return;
     }
 
-    const notes = repo.rows('Notes');
+    const notes = repo.rows('Notes').filter((n) => n.id !== vault.VAULT_ID);
     container.append(toolbar(notes));
 
     const matching = query ? notes.filter((n) => matches(n, query)) : notes;
@@ -130,11 +158,40 @@ export function renderNotes(container) {
         class: 'notes-count',
         text: `${notes.filter((n) => matches(n, query)).length} of ${notes.length}`,
       }) : null,
+      lockButton(),
+      vault.vaultExists() ? el('button', {
+        class: 'btn btn-ghost btn-sm btn-icon',
+        title: 'Vault settings',
+        onclick: () => openVaultSettings(paint),
+      }, [el('span', { class: 'micon', style: 'font-size:17px', text: 'key' })]) : null,
       el('button', {
         class: 'btn btn-ghost btn-sm',
         onclick: () => openCategoryManager(paint),
       }, [el('span', { class: 'micon', style: 'font-size:17px', text: 'folder_managed' }), 'Categories']),
       el('button', { class: 'btn', text: '+ New note', onclick: () => openNoteForm({}, paint) }),
+    ]);
+  }
+
+  function lockButton() {
+    if (!vault.vaultExists()) return null;
+    const unlocked = vault.isUnlocked();
+    return el('button', {
+      class: `btn btn-ghost btn-sm${unlocked ? '' : ' is-locked'}`,
+      title: unlocked ? 'Lock secure notes' : 'Unlock secure notes',
+      onclick: async () => {
+        if (unlocked) {
+          vault.lock();
+          plaintext.clear();
+          toast('Locked');
+          paint();
+        } else if (await promptUnlock()) {
+          await decryptAll();
+          paint();
+        }
+      },
+    }, [
+      el('span', { class: 'micon', style: 'font-size:17px', text: unlocked ? 'lock_open' : 'lock' }),
+      unlocked ? 'Lock' : 'Unlock',
     ]);
   }
 
@@ -165,7 +222,9 @@ export function renderNotes(container) {
   }
 
   function noteCard(note) {
-    const blocks = parseBlocks(note.content);
+    const readable = bodyOf(note);
+    if (readable === null) return lockedCard(note);
+    const blocks = parseBlocks(readable);
     const labels = splitLabels(note.labels);
     const accent = normaliseHex(note.color_hex);
     const progress = checklistProgress(blocks);
@@ -176,6 +235,9 @@ export function renderNotes(container) {
       onclick: () => openNoteViewer(note, { onChanged: paint, onToggle: queueSave }),
     }, [
       el('div', { class: 'note-card-head' }, [
+        isSecure(note)
+          ? el('span', { class: 'micon note-secure', text: 'lock', title: 'Encrypted' })
+          : null,
         el('span', { class: 'note-title', text: note.title || '(untitled)' }),
         parseBool(note.pinned)
           ? el('span', { class: 'micon note-pin', text: 'push_pin', title: 'Pinned' })
@@ -210,6 +272,32 @@ export function renderNotes(container) {
    * open a note is worse than the shortcut was worth. Ticking lives in the
    * viewer now.
    */
+  /**
+   * A locked note still shows its title, category and labels — those stay in
+   * plain columns so the tab remains navigable without the passphrase. Only
+   * the body is ciphertext.
+   */
+  function lockedCard(note) {
+    return el('div', {
+      class: 'note-card is-locked',
+      onclick: () => promptUnlock(),
+    }, [
+      el('div', { class: 'note-card-head' }, [
+        el('span', { class: 'micon note-secure', text: 'lock' }),
+        el('span', { class: 'note-title', text: note.title || '(untitled)' }),
+      ]),
+      el('div', { class: 'locked-body' }, [
+        el('span', { class: 'micon locked-icon', text: 'lock' }),
+        el('div', { class: 'locked-text', text: 'Encrypted — unlock to read' }),
+      ]),
+      splitLabels(note.labels).length
+        ? el('div', { class: 'note-labels' }, splitLabels(note.labels).map((l) => el('span', {
+            class: 'chip chip-label', text: l,
+          })))
+        : null,
+    ]);
+  }
+
   function previewBlock(block) {
     if (block.type === 'checklist') {
       const shown = block.items.slice(0, 4);
@@ -277,7 +365,12 @@ export function renderNotes(container) {
     ]);
   }
 
-  paint();
+  (async () => {
+    if (!vault.isUnlocked() && vault.isRemembered()) {
+      if (await vault.restore()) await decryptAll();
+    }
+    paint();
+  })();
 }
 
 // ---------- category manager ----------
@@ -420,8 +513,9 @@ function openNoteForm(note, onSaved) {
     pinned: parseBool(note.pinned),
     color_hex: normaliseHex(note.color_hex) || '',
   };
-  let blocks = parseBlocks(note.content);
+  let blocks = parseBlocks(isEdit ? bodyOf(note) : note.content);
   if (!blocks.length) blocks = [blankBlock('text')];
+  values.secure = isSecure(note);
 
   const errorNode = el('div', { class: 'error hidden' });
 
@@ -559,6 +653,34 @@ function openNoteForm(note, onSaved) {
         field('Content', blockHost),
         field('Labels', labelPicker(values.labels, (names) => { values.labels = names.join('|'); })),
 
+        el('label', { class: `switch-row${values.secure ? ' is-on' : ''}` }, [
+          el('span', { class: 'micon switch-icon', text: 'lock' }),
+          el('div', { class: 'switch-text' }, [
+            el('div', { class: 'switch-title', text: 'Encrypt this note' }),
+            el('div', {
+              class: 'switch-sub',
+              text: 'The body is stored as ciphertext. Title, category and labels stay readable '
+                + 'so the note can still be found.',
+            }),
+          ]),
+          el('span', { class: 'switch' }, [
+            el('input', {
+              type: 'checkbox',
+              checked: values.secure || null,
+              onchange: async (e) => {
+                const row = e.target.closest('.switch-row');
+                if (e.target.checked) {
+                  const ready = await ensureVaultReady();
+                  if (!ready) { e.target.checked = false; return; }
+                }
+                values.secure = e.target.checked;
+                row.classList.toggle('is-on', values.secure);
+              },
+            }),
+            el('span', { class: 'switch-track' }, [el('span', { class: 'switch-thumb' })]),
+          ]),
+        ]),
+
         el('label', { class: `switch-row${values.pinned ? ' is-on' : ''}` }, [
           el('span', { class: 'micon switch-icon', text: 'push_pin' }),
           el('div', { class: 'switch-text' }, [
@@ -622,18 +744,26 @@ function openNoteForm(note, onSaved) {
           // Drop blocks the user added but never filled, so an accidental
           // "+ Table" doesn't leave an empty grid on the card forever.
           const kept = blocks.filter((b) => !isBlockEmpty(b));
-          await repo.save('Notes', {
+          const body = serializeBlocks(kept.length ? kept : [blankBlock('text')]);
+          const stored = values.secure ? await vault.encrypt(body) : body;
+
+          const saved = await repo.save('Notes', {
             ...(isEdit ? note : {}),
             title: values.title.trim(),
             type: 'rich',
             category: values.category.trim(),
-            content: serializeBlocks(kept.length ? kept : [blankBlock('text')]),
+            content: stored,
             labels: values.labels,
             pinned: values.pinned,
-            is_encrypted: false,
+            is_encrypted: values.secure,
             color_hex: values.color_hex,
             sort_order: isEdit ? parseNum(note.sort_order, 0) : nextSortOrder(),
           });
+
+          // Keep the session cache in step so the note stays readable without
+          // a round trip through the vault.
+          if (values.secure) plaintext.set(saved.id, body);
+          else plaintext.delete(saved.id);
           await taxonomy.ensure(taxonomy.KIND_LABEL, splitLabels(values.labels));
           toast(isEdit ? 'Note saved' : 'Note created');
           close();
@@ -659,7 +789,9 @@ function openNoteForm(note, onSaved) {
  * the most common reason to open one at all.
  */
 function openNoteViewer(note, { onChanged, onToggle }) {
-  const blocks = parseBlocks(note.content);
+  const readable = bodyOf(note);
+  if (readable === null) return;   // locked — the card opens the unlock prompt
+  const blocks = parseBlocks(readable);
   const labels = splitLabels(note.labels);
   const accent = normaliseHex(note.color_hex);
   const progress = checklistProgress(blocks);
@@ -688,6 +820,12 @@ function openNoteViewer(note, { onChanged, onToggle }) {
           `${progress.done} of ${progress.total} done`,
         ]));
       }
+      if (isSecure(note)) {
+        meta.push(el('span', { class: 'view-chip is-secure' }, [
+          el('span', { class: 'micon', style: 'font-size:15px', text: 'lock' }),
+          'Encrypted',
+        ]));
+      }
       if (meta.length) body.append(el('div', { class: 'view-meta' }, meta));
 
       const host = el('div', {
@@ -697,8 +835,8 @@ function openNoteViewer(note, { onChanged, onToggle }) {
 
       const renderBody = () => {
         clear(host);
-        for (const block of parseBlocks(note.content)) {
-          host.append(viewBlock(block, note, () => { renderBody(); onToggle?.({ ...note }); }));
+        for (const block of parseBlocks(bodyOf(note))) {
+          host.append(viewBlock(block, note, () => { renderBody(); onToggle?.(note); }));
         }
       };
       renderBody();
@@ -752,11 +890,11 @@ function viewBlock(block, note, onChange) {
         type: 'checkbox',
         checked: item.done || null,
         onchange: (e) => {
-          const blocks = parseBlocks(note.content);
+          const blocks = parseBlocks(bodyOf(note));
           const target = blocks.find((b) => b.id === block.id);
           if (!target) return;
           target.items[i].done = e.target.checked;
-          note.content = serializeBlocks(blocks);
+          setBody(note, serializeBlocks(blocks));
           onChange();
         },
       }),
@@ -806,6 +944,330 @@ function usable(v) {
 function byLine(who) {
   const clean = usable(who);
   return clean ? ` by ${clean}` : '';
+}
+
+// ---------- vault setup ----------
+
+/**
+ * Makes sure the vault exists and is open, creating it on first use.
+ * Resolves false if the user backs out, so the caller can undo its toggle.
+ */
+async function ensureVaultReady() {
+  if (vault.isUnlocked()) return true;
+  if (vault.vaultExists()) return promptUnlock();
+  return promptCreateVault();
+}
+
+function promptCreateVault() {
+  return new Promise((resolve) => {
+    let settled = false;
+    // Captured from render() rather than looked up in the document: this
+    // dialog opens on top of the note editor, so a global querySelector would
+    // find the editor's body and close button instead of these.
+    let submit = () => {};
+    let dismiss = () => {};
+
+    openModal({
+      title: 'Create a passphrase',
+      icon: '\u{1F510}',
+      render: (body, close) => {
+        dismiss = close;
+        const error = el('div', { class: 'error hidden' });
+        const first = el('input', { class: 'input', type: 'password', placeholder: 'Passphrase' });
+        const second = el('input', {
+          class: 'input',
+          type: 'password',
+          placeholder: 'Repeat it',
+          onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } },
+        });
+        const strength = el('div', { class: 'hint' });
+
+        first.addEventListener('input', () => {
+          const n = first.value.length;
+          strength.textContent = n === 0 ? ''
+            : n < 8 ? `${8 - n} more character${8 - n === 1 ? '' : 's'} needed`
+              : n < 14 ? 'Acceptable \u2014 longer is better'
+                : 'Good length';
+        });
+
+        submit = async () => {
+          error.classList.add('hidden');
+          if (first.value !== second.value) {
+            error.textContent = 'The two entries do not match';
+            error.classList.remove('hidden');
+            return;
+          }
+          try {
+            await vault.create(first.value);
+            await vault.remember();
+            settled = true;
+            toast('Vault created');
+            dismiss();
+            resolve(true);
+          } catch (err) {
+            error.textContent = err.message;
+            error.classList.remove('hidden');
+          }
+        };
+
+        append(
+          body,
+          el('p', {
+            class: 'confirm-message',
+            text: 'Secure notes are encrypted with a passphrase before they reach the '
+              + 'spreadsheet. Anyone opening the sheet without it sees only ciphertext.',
+          }),
+          el('div', { class: 'confirm-warnings' }, [
+            el('div', { class: 'confirm-warning' }, [
+              el('span', { class: 'confirm-warning-icon', text: '\u26A0' }),
+              el('span', {
+                text: 'There is no recovery. If you forget this passphrase the encrypted '
+                  + 'notes cannot be read again \u2014 not by this app, not by Google, not by anyone.',
+              }),
+            ]),
+            el('div', { class: 'confirm-warning' }, [
+              el('span', { class: 'confirm-warning-icon', text: '\u{1F465}' }),
+              el('span', {
+                text: 'Everyone you share the sheet with needs this same passphrase to read '
+                  + 'secure notes. Tell them outside the sheet, not inside it.',
+              }),
+            ]),
+          ]),
+          field('Passphrase', first, { required: true }),
+          strength,
+          field('Confirm', second, { required: true, error }),
+        );
+        setTimeout(() => first.focus(), 50);
+      },
+      actions: (close) => [
+        el('button', {
+          class: 'btn btn-ghost',
+          text: 'Cancel',
+          onclick: () => { close(); if (!settled) resolve(false); },
+        }),
+        el('button', { class: 'btn', text: 'Create vault', onclick: () => submit() }),
+      ],
+    });
+  });
+}
+
+function promptUnlock() {
+  return new Promise((resolve) => {
+    let settled = false;
+    let submit = () => {};
+    let dismiss = () => {};
+
+    openModal({
+      title: 'Unlock secure notes',
+      icon: '\u{1F512}',
+      render: (body, close) => {
+        dismiss = close;
+        const error = el('div', { class: 'error hidden' });
+        const input = el('input', {
+          class: 'input',
+          type: 'password',
+          placeholder: 'Passphrase',
+          onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } },
+        });
+        const remember = el('input', { type: 'checkbox', checked: true });
+
+        submit = async () => {
+          error.classList.add('hidden');
+          try {
+            if (!(await vault.unlock(input.value))) {
+              error.textContent = 'That passphrase does not open this vault';
+              error.classList.remove('hidden');
+              return;
+            }
+            if (remember.checked) await vault.remember();
+            settled = true;
+            toast('Unlocked');
+            dismiss();
+            resolve(true);
+          } catch (err) {
+            error.textContent = err.message;
+            error.classList.remove('hidden');
+          }
+        };
+
+        append(
+          body,
+          el('p', {
+            class: 'confirm-message',
+            text: 'Enter the passphrase for this sheet\u2019s secure notes.',
+          }),
+          field('Passphrase', input, { error }),
+          el('label', { class: 'switch-row is-on' }, [
+            el('span', { class: 'micon switch-icon', text: 'devices' }),
+            el('div', { class: 'switch-text' }, [
+              el('div', { class: 'switch-title', text: 'Remember on this device' }),
+              el('div', {
+                class: 'switch-sub',
+                text: 'Stores the derived key in this browser, never the passphrase itself',
+              }),
+            ]),
+            el('span', { class: 'switch' }, [
+              remember,
+              el('span', { class: 'switch-track' }, [el('span', { class: 'switch-thumb' })]),
+            ]),
+          ]),
+        );
+        setTimeout(() => input.focus(), 50);
+      },
+      actions: (close) => [
+        el('button', {
+          class: 'btn btn-ghost',
+          text: 'Cancel',
+          onclick: () => { close(); if (!settled) resolve(false); },
+        }),
+        el('button', { class: 'btn', text: 'Unlock', onclick: () => submit() }),
+      ],
+    });
+  });
+}
+
+function openVaultSettings(onChanged) {
+  openModal({
+    title: 'Vault',
+    icon: '\u{1F511}',
+    render: (body, close) => {
+      const secureCount = repo.rows('Notes')
+        .filter((n) => n.id !== vault.VAULT_ID && isEnvelope(n.content)).length;
+
+      append(
+        body,
+        el('div', { class: 'vault-status' }, [
+          el('span', {
+            class: 'micon',
+            style: `font-size:20px;color:${vault.isUnlocked() ? 'var(--accent)' : 'var(--text-dim)'}`,
+            text: vault.isUnlocked() ? 'lock_open' : 'lock',
+          }),
+          el('div', {}, [
+            el('div', {
+              class: 'switch-title',
+              text: vault.isUnlocked() ? 'Unlocked' : 'Locked',
+            }),
+            el('div', {
+              class: 'switch-sub',
+              text: `${secureCount} encrypted note${secureCount === 1 ? '' : 's'} on this sheet`,
+            }),
+          ]),
+        ]),
+
+        el('div', { class: 'vault-actions' }, [
+          vault.isUnlocked() ? el('button', {
+            class: 'btn btn-ghost btn-block',
+            onclick: () => { vault.lock(); plaintext.clear(); close(); toast('Locked'); onChanged?.(); },
+          }, [el('span', { class: 'micon', style: 'font-size:17px', text: 'lock' }), 'Lock now']) : null,
+
+          el('button', {
+            class: 'btn btn-ghost btn-block',
+            onclick: async () => {
+              close();
+              if (await promptChangePassphrase()) onChanged?.();
+            },
+          }, [el('span', { class: 'micon', style: 'font-size:17px', text: 'password' }), 'Change passphrase']),
+
+          vault.isRemembered() ? el('button', {
+            class: 'btn btn-ghost btn-danger btn-block',
+            onclick: async () => {
+              const ok = await confirmDialog({
+                title: 'Forget on this device?',
+                message: 'The key stored in this browser is deleted. Your notes stay encrypted '
+                  + 'and unchanged.',
+                note: 'You will need the passphrase again on this device.',
+                confirmLabel: 'Forget it',
+              });
+              if (!ok) return;
+              vault.forget();
+              vault.lock();
+              plaintext.clear();
+              close();
+              toast('Key forgotten on this device');
+              onChanged?.();
+            },
+          }, [el('span', { class: 'micon', style: 'font-size:17px', text: 'devices_off' }), 'Forget on this device']) : null,
+        ]),
+
+        el('p', {
+          class: 'confirm-note',
+          text: 'The passphrase itself is never stored. Only a key derived from it is kept, '
+            + 'and only when you ask this device to remember.',
+        }),
+      );
+    },
+    actions: (close) => [el('button', { class: 'btn', text: 'Done', onclick: close })],
+  });
+}
+
+function promptChangePassphrase() {
+  return new Promise((resolve) => {
+    let settled = false;
+    let submit = () => {};
+    let dismiss = () => {};
+
+    openModal({
+      title: 'Change passphrase',
+      icon: '\u{1F510}',
+      render: (body, close) => {
+        dismiss = close;
+        const error = el('div', { class: 'error hidden' });
+        const current = el('input', { class: 'input', type: 'password', placeholder: 'Current passphrase' });
+        const next = el('input', { class: 'input', type: 'password', placeholder: 'New passphrase' });
+        const again = el('input', {
+          class: 'input',
+          type: 'password',
+          placeholder: 'Repeat the new one',
+          onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } },
+        });
+
+        submit = async () => {
+          error.classList.add('hidden');
+          if (next.value !== again.value) {
+            error.textContent = 'The two new entries do not match';
+            error.classList.remove('hidden');
+            return;
+          }
+          const button = body.parentElement.querySelector('.modal-foot .btn:not(.btn-ghost)');
+          if (button) { button.disabled = true; button.textContent = 'Re-encrypting\u2026'; }
+          try {
+            const n = await vault.changePassphrase(current.value, next.value);
+            await decryptAll();
+            settled = true;
+            toast(`Passphrase changed \u00b7 ${n} note${n === 1 ? '' : 's'} re-encrypted`);
+            dismiss();
+            resolve(true);
+          } catch (err) {
+            error.textContent = err.message;
+            error.classList.remove('hidden');
+            if (button) { button.disabled = false; button.textContent = 'Change it'; }
+          }
+        };
+
+        append(
+          body,
+          el('p', {
+            class: 'confirm-message',
+            text: 'Every encrypted note is decrypted and re-encrypted under the new '
+              + 'passphrase, as a single write \u2014 if it fails, nothing moved and the old '
+              + 'passphrase still opens everything.',
+          }),
+          field('Current', current, { required: true }),
+          field('New', next, { required: true }),
+          field('Confirm', again, { required: true, error }),
+        );
+        setTimeout(() => current.focus(), 50);
+      },
+      actions: (close) => [
+        el('button', {
+          class: 'btn btn-ghost',
+          text: 'Cancel',
+          onclick: () => { close(); if (!settled) resolve(false); },
+        }),
+        el('button', { class: 'btn', text: 'Change it', onclick: () => submit() }),
+      ],
+    });
+  });
 }
 
 // ---------- block editors ----------
@@ -1009,12 +1471,21 @@ function field(label, control, { required = false, hint = '', error = null } = {
 }
 
 function matches(note, query) {
+  // A locked note is searchable by its plain columns only — its body is
+  // ciphertext, and searching ciphertext is meaningless.
+  const readable = bodyOf(note);
   return [
     note.title,
     note.category,
     note.labels,
-    blocksToText(parseBlocks(note.content)),
+    readable === null ? '' : blocksToText(parseBlocks(readable)),
   ].join(' ').toLowerCase().includes(query);
+}
+
+/** Writes a body back, keeping the encrypted cache and the row consistent. */
+function setBody(note, content) {
+  if (isSecure(note)) plaintext.set(note.id, content);
+  else note.content = content;
 }
 
 function splitLabels(raw) {

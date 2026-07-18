@@ -2110,3 +2110,46 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
   margin-bottom: 6px;
   color: var(--text);
 }
+
+
+/* ---------- Secure notes ---------- */
+
+.note-secure { font-size: 15px; color: var(--accent); flex: 0 0 auto; }
+
+.note-card.is-locked { border-style: dashed; }
+.note-card.is-locked .note-title { color: var(--text-dim); }
+
+.locked-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+
+.locked-icon { font-size: 22px; opacity: .55; }
+.locked-text { font-size: 12.5px; font-style: italic; }
+
+.view-chip.is-secure { background: var(--accent-soft); color: var(--accent); }
+
+.btn.is-locked { color: var(--accent); border-color: var(--accent); }
+.btn.is-locked:hover { background: var(--accent-soft); }
+
+
+/* ---------- Vault settings ---------- */
+
+.vault-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  margin-bottom: 14px;
+}
+
+.vault-actions { display: flex; flex-direction: column; gap: 8px; }
+.vault-actions .btn { justify-content: flex-start; gap: 9px; }
