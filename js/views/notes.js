@@ -263,15 +263,11 @@ export function renderNotes(container) {
             class: 'chip chip-label', text: l,
           })))
         : null,
+
+      authorLine(note),
     ]);
   }
 
-  /**
-   * Card previews are read-only summaries. Checkboxes used to be live here,
-   * but a card is something you scan — mis-ticking an item while trying to
-   * open a note is worse than the shortcut was worth. Ticking lives in the
-   * viewer now.
-   */
   /**
    * A locked note still shows its title, category and labels — those stay in
    * plain columns so the tab remains navigable without the passphrase. Only
@@ -295,9 +291,17 @@ export function renderNotes(container) {
             class: 'chip chip-label', text: l,
           })))
         : null,
+
+      authorLine(note),
     ]);
   }
 
+  /**
+   * Card previews are read-only summaries. Checkboxes used to be live here,
+   * but a card is something you scan — mis-ticking an item while trying to
+   * open a note is worse than the shortcut was worth. Ticking lives in the
+   * viewer now.
+   */
   function previewBlock(block) {
     if (block.type === 'checklist') {
       const shown = block.items.slice(0, 4);
@@ -824,6 +828,13 @@ function openNoteViewer(note, { onChanged, onToggle }) {
         meta.push(el('span', { class: 'view-chip is-secure' }, [
           el('span', { class: 'micon', style: 'font-size:15px', text: 'lock' }),
           'Encrypted',
+        ]));
+      }
+      const who = personName(note.created_by);
+      if (who) {
+        meta.push(el('span', { class: 'view-chip' }, [
+          el('span', { class: 'micon', style: 'font-size:15px', text: 'person' }),
+          who,
         ]));
       }
       if (meta.length) body.append(el('div', { class: 'view-meta' }, meta));
@@ -1486,6 +1497,49 @@ function matches(note, query) {
 function setBody(note, content) {
   if (isSecure(note)) plaintext.set(note.id, content);
   else note.content = content;
+}
+
+/** Small "who and when" footer for a card. */
+function authorLine(note) {
+  const who = personName(note.created_by);
+  const when = usable(note.updated_at) || usable(note.created_at);
+  if (!who && !when) return null;
+  return el('div', { class: 'note-author' }, [
+    who ? el('span', { class: 'note-author-badge', text: initialsOf(who) }) : null,
+    el('span', { class: 'note-author-name', text: who || '—' }),
+    when ? el('span', { class: 'note-author-when', text: shortWhen(when) }) : null,
+  ]);
+}
+
+/**
+ * The readable part of an account: the local part of an email, tidied. The
+ * full address adds nothing on a card and pushes the useful part out of view.
+ */
+function personName(value) {
+  const raw = usable(value);
+  if (!raw) return '';
+  const local = raw.includes('@') ? raw.split('@')[0] : raw;
+  return local.replace(/[._-]+/g, ' ').trim() || raw;
+}
+
+function initialsOf(name) {
+  const parts = name.split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts.length === 1 ? parts[0].slice(0, 2) : parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+/** Relative for anything recent, an absolute date once that stops helping. */
+function shortWhen(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const mins = Math.round((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString('en-MY', { day: '2-digit', month: 'short' });
 }
 
 function splitLabels(raw) {

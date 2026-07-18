@@ -2153,3 +2153,41 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
 
 .vault-actions { display: flex; flex-direction: column; gap: 8px; }
 .vault-actions .btn { justify-content: flex-start; gap: 9px; }
+
+
+/* ---------- Note author ---------- */
+
+.note-author {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.note-author-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  flex: 0 0 auto;
+}
+
+.note-author-name {
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-author-when { margin-left: auto; flex: 0 0 auto; opacity: .85; }
