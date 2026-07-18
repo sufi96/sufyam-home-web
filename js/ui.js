@@ -19,6 +19,22 @@ export function el(tag, attrs = {}, children = []) {
   return node;
 }
 
+/**
+ * append() that skips nullish children.
+ *
+ * The native Element.append stringifies null into the literal text "null",
+ * so a conditional child like `isEdit ? auditBlock() : null` renders the word
+ * "null" on the page. el() already filters these out; this is for the cases
+ * that append directly to an existing node.
+ */
+export function append(parent, ...children) {
+  for (const child of children) {
+    if (child === null || child === undefined || child === false) continue;
+    parent.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return parent;
+}
+
 export function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
   return node;

@@ -178,7 +178,22 @@ body {
 
 .btn-ghost:hover { background: var(--surface-2); color: var(--text); }
 
-.btn-danger { background: var(--danger); }
+.btn-danger { background: var(--danger); color: #fff; border-color: transparent; }
+
+/* Ghost + danger reads as an outlined destructive action. Without this the
+   two classes fight: btn-danger sets the red background while btn-ghost keeps
+   its muted text colour, leaving grey text sitting on red. */
+.btn-ghost.btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.btn-ghost.btn-danger:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: var(--danger);
+}
 
 .btn-icon { padding: 7px 10px; font-size: 15px; }
 .btn-block { width: 100%; }
@@ -1967,3 +1982,69 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
 }
 
 .inline-add .input { flex: 1; }
+
+
+/* ---------- Note viewer ---------- */
+
+.view-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.view-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.view-chip.is-pinned { background: var(--warn-soft); color: var(--warn); }
+
+.view-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-left: 14px;
+  border-left: 3px solid var(--note-accent, var(--border));
+  font-size: 14.5px;
+  line-height: 1.65;
+}
+
+.view-checklist { display: flex; flex-direction: column; gap: 6px; }
+
+.view-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.view-check input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+.view-check.is-done > span { text-decoration: line-through; opacity: .5; }
+
+.note-table.is-view th, .note-table.is-view td { padding: 7px 10px; }
+.note-table.is-view th { font-weight: 640; text-align: left; }
+
+.view-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 16px;
+}

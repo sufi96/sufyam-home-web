@@ -18,7 +18,7 @@ import {
 import { richTextEditor, renderRichText, htmlToText } from '../richtext.js';
 import { labelPicker, colourPicker } from './pickers.js';
 import {
-  el, clear, toast, openModal, confirmDialog, emptyState, fmtDateTime,
+  el, clear, append, toast, openModal, confirmDialog, emptyState, fmtDateTime,
 } from '../ui.js';
 
 const UNFILED = 'Unfiled';
@@ -175,7 +175,7 @@ export function renderNotes(container) {
       style: accent ? `--note-accent:${accent};--note-tint:color-mix(in srgb, ${accent} 7%, var(--surface))` : '',
       onclick: (e) => {
         if (e.target.closest('.note-check')) return;
-        openNoteForm(note, paint);
+        openNoteViewer(note, { onChanged: paint, onToggle: queueSave });
       },
     }, [
       el('div', { class: 'note-card-head' }, [
@@ -540,7 +540,8 @@ function openNoteForm(note, onSaved) {
         newCategoryRow,
       ]);
 
-      body.append(
+      append(
+        body,
         el('div', { class: 'field-row' }, [
           field('Title', el('input', {
             class: 'input',
@@ -575,10 +576,7 @@ function openNoteForm(note, onSaved) {
           ]),
         ]),
 
-        isEdit ? el('div', { class: 'audit-note' }, [
-          el('div', { text: `Created ${fmtDateTime(note.created_at)} by ${note.created_by || '—'}` }),
-          el('div', { text: `Updated ${fmtDateTime(note.updated_at)} by ${note.updated_by || '—'}` }),
-        ]) : null,
+        auditBlock(note),
       );
 
       renderBlocks();
@@ -649,6 +647,159 @@ function openNoteForm(note, onSaved) {
       return buttons;
     },
   });
+}
+
+// ---------- viewer ----------
+
+/**
+ * Read-only view of a note. Opening a note to read it shouldn't drop you into
+ * an editor — but checklists stay tickable here, because ticking things off is
+ * the most common reason to open one at all.
+ */
+function openNoteViewer(note, { onChanged, onToggle }) {
+  const blocks = parseBlocks(note.content);
+  const labels = splitLabels(note.labels);
+  const accent = normaliseHex(note.color_hex);
+  const progress = checklistProgress(blocks);
+
+  openModal({
+    title: note.title || '(untitled)',
+    icon: '🗒',
+    size: 'xl',
+    render: (body) => {
+      const meta = [];
+      if (note.category) {
+        meta.push(el('span', { class: 'view-chip' }, [
+          el('span', { class: 'micon', style: 'font-size:15px', text: 'folder' }),
+          note.category,
+        ]));
+      }
+      if (parseBool(note.pinned)) {
+        meta.push(el('span', { class: 'view-chip is-pinned' }, [
+          el('span', { class: 'micon', style: 'font-size:15px', text: 'push_pin' }),
+          'Pinned',
+        ]));
+      }
+      if (progress.total) {
+        meta.push(el('span', { class: 'view-chip' }, [
+          el('span', { class: 'micon', style: 'font-size:15px', text: 'checklist' }),
+          `${progress.done} of ${progress.total} done`,
+        ]));
+      }
+      if (meta.length) body.append(el('div', { class: 'view-meta' }, meta));
+
+      const host = el('div', {
+        class: 'view-body',
+        style: accent ? `--note-accent:${accent}` : '',
+      });
+
+      const renderBody = () => {
+        clear(host);
+        for (const block of parseBlocks(note.content)) {
+          host.append(viewBlock(block, note, () => { renderBody(); onToggle?.({ ...note }); }));
+        }
+      };
+      renderBody();
+      body.append(host);
+
+      if (labels.length) {
+        body.append(el('div', { class: 'view-labels' }, labels.map((l) => el('span', {
+          class: 'chip chip-label', text: l,
+        }))));
+      }
+
+      const audit = auditBlock(note);
+      if (audit) body.append(audit);
+    },
+    actions: (close) => [
+      el('button', {
+        class: 'btn btn-ghost btn-danger',
+        text: 'Delete',
+        style: 'margin-right:auto',
+        onclick: async () => {
+          const ok = await confirmDialog({
+            title: 'Delete note?',
+            message: `"${note.title || 'Untitled'}" will be marked deleted.`,
+            note: 'The row stays in the sheet and can be restored.',
+            confirmLabel: 'Delete note',
+          });
+          if (!ok) return;
+          try {
+            await repo.remove('Notes', note.id);
+            toast('Note deleted');
+            close();
+            onChanged?.();
+          } catch (err) { toast(err.message, { error: true }); }
+        },
+      }),
+      el('button', { class: 'btn btn-ghost', text: 'Close', onclick: close }),
+      el('button', {
+        class: 'btn',
+        onclick: () => { close(); openNoteForm(note, onChanged); },
+      }, [el('span', { class: 'micon', style: 'font-size:17px', text: 'edit' }), 'Edit']),
+    ],
+  });
+}
+
+function viewBlock(block, note, onChange) {
+  if (block.type === 'checklist') {
+    return el('div', { class: 'view-checklist' }, block.items.map((item, i) => el('label', {
+      class: `view-check${item.done ? ' is-done' : ''}`,
+    }, [
+      el('input', {
+        type: 'checkbox',
+        checked: item.done || null,
+        onchange: (e) => {
+          const blocks = parseBlocks(note.content);
+          const target = blocks.find((b) => b.id === block.id);
+          if (!target) return;
+          target.items[i].done = e.target.checked;
+          note.content = serializeBlocks(blocks);
+          onChange();
+        },
+      }),
+      el('span', { text: item.text || '(blank)' }),
+    ])));
+  }
+
+  if (block.type === 'table') {
+    return el('div', { class: 'table-scroll' }, [
+      el('table', { class: 'note-table is-view' }, [
+        el('thead', {}, [el('tr', {}, block.columns.map((c) => el('th', { text: c })))]),
+        el('tbody', {}, block.rows.map((row) => el('tr', {}, row.map((cell) => el('td', { text: cell }))))),
+      ]),
+    ]);
+  }
+
+  return renderRichText(block.html);
+}
+
+/**
+ * Audit trail, or nothing at all. A note being created has no timestamps yet,
+ * and a hand-edited row can hold the literal strings "null"/"undefined" —
+ * neither should be rendered as if it were a real value.
+ */
+function auditBlock(note) {
+  const when = usable(note.created_at) || usable(note.updated_at);
+  if (!when) return null;
+  const rows = [];
+  if (usable(note.created_at)) {
+    rows.push(el('div', { text: `Created ${fmtDateTime(note.created_at)}${byLine(note.created_by)}` }));
+  }
+  if (usable(note.updated_at)) {
+    rows.push(el('div', { text: `Updated ${fmtDateTime(note.updated_at)}${byLine(note.updated_by)}` }));
+  }
+  return rows.length ? el('div', { class: 'audit-note' }, rows) : null;
+}
+
+function usable(v) {
+  const s = String(v ?? '').trim().toLowerCase();
+  return s && s !== 'null' && s !== 'undefined' ? String(v).trim() : '';
+}
+
+function byLine(who) {
+  const clean = usable(who);
+  return clean ? ` by ${clean}` : '';
 }
 
 // ---------- block editors ----------
