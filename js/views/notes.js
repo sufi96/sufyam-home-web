@@ -426,7 +426,7 @@ function openNoteForm(note, onSaved) {
   openModal({
     title: isEdit ? 'Edit note' : 'New note',
     icon: '🗒',
-    wide: true,
+    size: 'xl',
     render: (body) => {
       const blockHost = el('div', { class: 'block-list' });
 
@@ -465,20 +465,79 @@ function openNoteForm(note, onSaved) {
           ]))));
       };
 
-      const categories = taxonomy.names(taxonomy.KIND_NOTE_CATEGORY);
       const categorySelect = el('select', {
         class: 'select',
         onchange: (e) => { values.category = e.target.value; },
-      }, [
-        el('option', { value: '', text: '— Unfiled —' }),
-        ...categories.map((name) => el('option', {
-          value: name, text: name, selected: values.category === name,
-        })),
-        // A category the note already has but the taxonomy doesn't know, e.g.
-        // typed before this list existed.
-        ...(values.category && !categories.includes(values.category)
-          ? [el('option', { value: values.category, text: `${values.category} (not in list)`, selected: true })]
-          : []),
+      });
+
+      const rebuildCategories = () => {
+        clear(categorySelect);
+        const categories = taxonomy.names(taxonomy.KIND_NOTE_CATEGORY);
+        categorySelect.append(el('option', { value: '', text: '— Unfiled —' }));
+        for (const name of categories) {
+          categorySelect.append(el('option', {
+            value: name, text: name, selected: values.category === name,
+          }));
+        }
+        // A category the note already carries but the taxonomy doesn't know,
+        // e.g. typed before this list existed.
+        if (values.category && !categories.includes(values.category)) {
+          categorySelect.append(el('option', {
+            value: values.category,
+            text: `${values.category} (not in list)`,
+            selected: true,
+          }));
+        }
+      };
+      rebuildCategories();
+
+      // Creating a category shouldn't mean abandoning the note you're writing.
+      const newCategoryRow = el('div', { class: 'inline-add hidden' });
+      const newCategoryInput = el('input', {
+        class: 'input',
+        type: 'text',
+        placeholder: 'New category name',
+        onkeydown: (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); addCategory(); }
+          if (e.key === 'Escape') { e.preventDefault(); newCategoryRow.classList.add('hidden'); }
+        },
+      });
+
+      async function addCategory() {
+        const name = newCategoryInput.value.trim();
+        if (!name) return;
+        try {
+          await taxonomy.create(taxonomy.KIND_NOTE_CATEGORY, { name });
+          values.category = name;
+          newCategoryInput.value = '';
+          newCategoryRow.classList.add('hidden');
+          rebuildCategories();
+          toast(`"${name}" added`);
+        } catch (err) {
+          toast(err.message, { error: true });
+        }
+      }
+
+      newCategoryRow.append(
+        newCategoryInput,
+        el('button', { type: 'button', class: 'btn btn-sm', text: 'Add', onclick: addCategory }),
+      );
+
+      const categoryField = el('div', {}, [
+        el('div', { class: 'select-with-add' }, [
+          categorySelect,
+          el('button', {
+            type: 'button',
+            class: 'btn btn-ghost btn-sm',
+            title: 'New category',
+            onclick: (e) => {
+              e.preventDefault();
+              newCategoryRow.classList.toggle('hidden');
+              if (!newCategoryRow.classList.contains('hidden')) newCategoryInput.focus();
+            },
+          }, [el('span', { class: 'micon', style: 'font-size:17px', text: 'add' })]),
+        ]),
+        newCategoryRow,
       ]);
 
       body.append(
@@ -490,21 +549,30 @@ function openNoteForm(note, onSaved) {
             placeholder: 'Wifi details, Shopping, …',
             oninput: (e) => { values.title = e.target.value; },
           }), { required: true, error: errorNode }),
-          field('Category', categorySelect),
+          field('Category', categoryField),
         ]),
 
         field('Colour', colourPicker(values.color_hex, (hex) => { values.color_hex = hex; })),
         field('Content', blockHost),
         field('Labels', labelPicker(values.labels, (names) => { values.labels = names.join('|'); })),
 
-        el('label', { class: 'note-pin-toggle' }, [
-          el('input', {
-            type: 'checkbox',
-            checked: values.pinned || null,
-            onchange: (e) => { values.pinned = e.target.checked; },
-          }),
-          el('span', { class: 'micon', style: 'font-size:16px', text: 'push_pin' }),
-          'Pin to the top',
+        el('label', { class: `switch-row${values.pinned ? ' is-on' : ''}` }, [
+          el('span', { class: 'micon switch-icon', text: 'push_pin' }),
+          el('div', { class: 'switch-text' }, [
+            el('div', { class: 'switch-title', text: 'Pin to the top' }),
+            el('div', { class: 'switch-sub', text: 'Keeps this note in its own section above the categories' }),
+          ]),
+          el('span', { class: 'switch' }, [
+            el('input', {
+              type: 'checkbox',
+              checked: values.pinned || null,
+              onchange: (e) => {
+                values.pinned = e.target.checked;
+                e.target.closest('.switch-row').classList.toggle('is-on', values.pinned);
+              },
+            }),
+            el('span', { class: 'switch-track' }, [el('span', { class: 'switch-thumb' })]),
+          ]),
         ]),
 
         isEdit ? el('div', { class: 'audit-note' }, [
