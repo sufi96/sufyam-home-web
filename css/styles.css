@@ -69,7 +69,13 @@ body {
   font-size: 15px;
 }
 
-.brand-mark { font-size: 20px; }
+.brand-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  flex: 0 0 auto;
+  object-fit: cover;
+}
 
 #nav { flex: 1; padding: 4px 10px; overflow-y: auto; }
 
@@ -98,7 +104,14 @@ body {
   font-weight: 600;
 }
 
-.nav-icon { width: 18px; text-align: center; }
+.nav-icon {
+  width: 20px;
+  font-size: 19px;
+  text-align: center;
+  flex: 0 0 auto;
+}
+
+.nav-item.active .nav-icon { font-variation-settings: 'FILL' 1, 'wght' 500; }
 
 .sidebar-foot { padding: 12px; border-top: 1px solid var(--border); }
 

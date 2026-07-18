@@ -5,11 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SufYam Home — Web</title>
   <link rel="stylesheet" href="css/styles.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏠</text></svg>">
+  <link rel="icon" href="assets/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/app-icon-32.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="assets/app-icon-192.png">
+  <link rel="apple-touch-icon" href="assets/app-icon-180.png">
+  <meta name="theme-color" content="#26384d">
   <!-- Same glyphs the phone app draws, so an icon_key looks identical on both. -->
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet"
-        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,400,0,0&display=block">
+        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,400,0..1,0&display=block">
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 </head>
@@ -17,7 +21,7 @@
   <div id="app">
     <aside class="sidebar">
       <div class="brand">
-        <span class="brand-mark">🏠</span>
+        <img class="brand-mark" src="assets/app-icon-64.png" alt="" width="28" height="28">
         <span class="brand-text">SufYam Home</span>
       </div>
       <nav id="nav"></nav>

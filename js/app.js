@@ -12,15 +12,17 @@ import { renderDashboard } from './views/dashboard.js';
 import { renderSettings } from './views/settings.js';
 import { el, clear, toast, spinner } from './ui.js';
 
+// Material Symbols, matching the icon set used for categories. Emoji rendered
+// at inconsistent sizes and weights across platforms and looked pasted on.
 const ICONS = {
-  dashboard: '📊',
-  Transactions: '💸',
-  Inventory: '📦',
-  Records_Reminders: '🔔',
-  Budgets: '🎯',
-  Categories: '🏷',
-  Stock_Movements: '🔄',
-  Taxonomy: '📚',
+  dashboard: 'donut_small',
+  Categories: 'account_tree',
+  Transactions: 'receipt_long',
+  Inventory: 'inventory_2',
+  Stock_Movements: 'swap_horiz',
+  Records_Reminders: 'event_repeat',
+  Budgets: 'savings',
+  Taxonomy: 'style',
 };
 
 const ROUTES = [
@@ -62,7 +64,7 @@ function buildNav() {
       class: `nav-item${route.id === current ? ' active' : ''}`,
       onclick: () => go(route.id),
     }, [
-      el('span', { class: 'nav-icon', text: ICONS[route.id] || '•' }),
+      el('span', { class: 'micon nav-icon', text: ICONS[route.id] || 'circle' }),
       route.label,
     ]));
   }
