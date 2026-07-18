@@ -102,21 +102,35 @@ export function toast(message, { error = false, ms = 3400 } = {}) {
  * Opens a modal. `render(body, close)` fills the body; `actions` builds the
  * footer buttons. Returns a close function.
  */
-export function openModal({ title, render, actions }) {
+export function openModal({ title, render, actions, icon = '', danger = false }) {
   const root = document.getElementById('modal-root');
   const body = el('div', { class: 'modal-body' });
   const foot = el('div', { class: 'modal-foot' });
+
+  const head = el('div', { class: 'modal-head' }, [
+    icon ? el('span', { class: `modal-icon${danger ? ' is-danger' : ''}`, text: icon }) : null,
+    el('span', { class: 'modal-title', text: title }),
+  ]);
+
+  const close = () => {
+    backdrop.classList.add('is-closing');
+    setTimeout(() => backdrop.remove(), 120);
+    document.removeEventListener('keydown', onKey);
+  };
+
   const modal = el('div', { class: 'modal' }, [
-    el('div', { class: 'modal-head', text: title }),
+    head,
     body,
     foot,
   ]);
+  modal.append(el('button', {
+    class: 'modal-close',
+    text: '✕',
+    title: 'Close',
+    onclick: () => close(),
+  }));
   const backdrop = el('div', { class: 'modal-backdrop' }, [modal]);
 
-  const close = () => {
-    backdrop.remove();
-    document.removeEventListener('keydown', onKey);
-  };
   const onKey = (e) => { if (e.key === 'Escape') close(); };
 
   backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
@@ -131,12 +145,40 @@ export function openModal({ title, render, actions }) {
   return close;
 }
 
-export function confirmDialog({ title, message, confirmLabel = 'Delete', danger = true }) {
+/**
+ * Confirmation dialog.
+ *
+ * `warnings` is a list of { icon, text } consequences, shown as distinct
+ * callouts rather than crammed into one paragraph — the point of the dialog is
+ * that each consequence gets read, and a wall of text doesn't get read.
+ */
+export function confirmDialog({
+  title,
+  message,
+  warnings = [],
+  note = '',
+  confirmLabel = 'Delete',
+  danger = true,
+}) {
   return new Promise((resolve) => {
     let decided = false;
-    const close = openModal({
+
+    openModal({
       title,
-      render: (body) => body.append(el('p', { text: message, style: 'margin:0;color:var(--text-dim)' })),
+      danger,
+      icon: danger ? '🗑' : 'ℹ',
+      render: (body) => {
+        body.append(el('p', { class: 'confirm-message', text: message }));
+        if (warnings.length) {
+          body.append(el('div', { class: 'confirm-warnings' }, warnings.map((w) => el('div', {
+            class: 'confirm-warning',
+          }, [
+            el('span', { class: 'confirm-warning-icon', text: w.icon || '⚠' }),
+            el('span', { text: w.text }),
+          ]))));
+        }
+        if (note) body.append(el('p', { class: 'confirm-note', text: note }));
+      },
       actions: (dismiss) => [
         el('button', {
           class: 'btn btn-ghost',
@@ -150,6 +192,7 @@ export function confirmDialog({ title, message, confirmLabel = 'Delete', danger 
         }),
       ],
     });
+
     // Backdrop / Escape dismissal counts as "no".
     const observer = new MutationObserver(() => {
       if (!document.querySelector('.modal-backdrop') && !decided) {
@@ -158,7 +201,6 @@ export function confirmDialog({ title, message, confirmLabel = 'Delete', danger 
       }
     });
     observer.observe(document.getElementById('modal-root'), { childList: true });
-    void close;
   });
 }
 

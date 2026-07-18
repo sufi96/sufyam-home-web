@@ -16,11 +16,46 @@ import { getConfig } from './config.js';
 // than the mobile app's. `email` is what lets us stamp created_by/updated_by.
 const SCOPE = 'https://www.googleapis.com/auth/spreadsheets email';
 const EMAIL_KEY = 'sufyam.web.email';
+const TOKEN_KEY = 'sufyam.web.token';
 
 let tokenClient = null;
 let accessToken = null;
 let tokenExpiry = 0;
 let userEmail = localStorage.getItem(EMAIL_KEY) || '';
+
+// Google's browser flow issues access tokens that last about an hour and no
+// refresh token — those only exist in the server-side flow, which this app
+// deliberately doesn't have. Caching the token means reloading the page, or
+// coming back ten minutes later, doesn't re-prompt; only the hourly expiry
+// does.
+//
+// The trade-off: a stored token is readable by any script that manages to run
+// on this origin. It is scoped to one spreadsheet plus your email address, it
+// expires within the hour, and this page renders all sheet content through
+// textContent (never innerHTML), so there is no injection path from your data.
+function loadStoredToken() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TOKEN_KEY) || 'null');
+    if (raw && raw.token && Date.now() < raw.expiry) {
+      accessToken = raw.token;
+      tokenExpiry = raw.expiry;
+    } else if (raw) {
+      localStorage.removeItem(TOKEN_KEY);
+    }
+  } catch {
+    localStorage.removeItem(TOKEN_KEY);
+  }
+}
+
+function storeToken() {
+  try {
+    localStorage.setItem(TOKEN_KEY, JSON.stringify({ token: accessToken, expiry: tokenExpiry }));
+  } catch {
+    // Storage full or blocked — the in-memory token still works this session.
+  }
+}
+
+loadStoredToken();
 
 const listeners = new Set();
 
@@ -91,6 +126,7 @@ export function requestToken({ silent = false } = {}) {
           accessToken = resp.access_token;
           // Refresh a minute early so a call can't die mid-flight.
           tokenExpiry = Date.now() + (Number(resp.expires_in || 3600) - 60) * 1000;
+          storeToken();
           emit();
           resolve(accessToken);
         };
@@ -102,6 +138,17 @@ export function requestToken({ silent = false } = {}) {
       })
       .catch(reject);
   });
+}
+
+/**
+ * Drops the cached token. Called when Google rejects it (401) so a stale
+ * stored token can't wedge the app into a permanent error state.
+ */
+export function invalidateToken() {
+  accessToken = null;
+  tokenExpiry = 0;
+  localStorage.removeItem(TOKEN_KEY);
+  emit();
 }
 
 /** Returns a valid token, refreshing silently when the current one expired. */
@@ -143,6 +190,7 @@ export function signOut() {
   tokenExpiry = 0;
   userEmail = '';
   localStorage.removeItem(EMAIL_KEY);
+  localStorage.removeItem(TOKEN_KEY);
   emit();
 }
 

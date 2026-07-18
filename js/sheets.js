@@ -3,7 +3,7 @@
 // ranges and values, nothing about entities, audit fields or the changelog.
 // All of that lives in repo.js.
 
-import { getAccessToken } from './auth.js';
+import { getAccessToken, invalidateToken } from './auth.js';
 import { getConfig } from './config.js';
 
 const BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
@@ -14,7 +14,7 @@ function sid() {
   return spreadsheetId;
 }
 
-async function api(path, { method = 'GET', body, params } = {}) {
+async function api(path, { method = 'GET', body, params, retried = false } = {}) {
   const token = await getAccessToken();
   const url = new URL(`${BASE}/${sid()}${path}`);
   Object.entries(params || {}).forEach(([k, v]) => {
@@ -38,10 +38,21 @@ async function api(path, { method = 'GET', body, params } = {}) {
     } catch {
       /* body wasn't JSON */
     }
+    // A rejected token is worth retrying once: it's usually just expiry, and
+    // silently re-acquiring beats making the user click through an error.
+    if (resp.status === 401 && !retried) {
+      invalidateToken();
+      return api(path, { method, body, params, retried: true });
+    }
+    if (resp.status === 429) {
+      throw new RateLimitError(friendlyError(resp.status, detail));
+    }
     throw new Error(friendlyError(resp.status, detail));
   }
   return resp.json();
 }
+
+export class RateLimitError extends Error {}
 
 function friendlyError(status, detail) {
   if (status === 401) return 'Session expired — please sign in again.';
@@ -49,7 +60,10 @@ function friendlyError(status, detail) {
     return `No permission for this spreadsheet. Make sure the signed-in Google account can edit it. ${detail}`;
   }
   if (status === 404) return 'Spreadsheet not found. Check the link in Settings.';
-  if (status === 429) return 'Google rate limit hit — wait a moment and retry.';
+  if (status === 429) {
+    return 'Google is rate-limiting this app (too many reads/writes in a minute). '
+      + 'Waiting a few seconds and retrying usually clears it.';
+  }
   return detail || `Sheets API error ${status}`;
 }
 
@@ -106,6 +120,42 @@ export async function appendRow(tab, cells) {
   const row = parseRowNumber(data.updates?.updatedRange);
   if (row === null) throw new Error(`Sheets append did not return a row range for ${tab}`);
   return row;
+}
+
+/**
+ * Appends several rows to one tab in a single request and returns the
+ * 1-indexed sheet row the first one landed on (the rest follow in order).
+ */
+export async function appendRows(tab, rowsOfCells) {
+  if (!rowsOfCells.length) return null;
+  const data = await api(`/values/${encodeURIComponent(`${tab}!A1`)}:append`, {
+    method: 'POST',
+    params: { valueInputOption: 'RAW', insertDataOption: 'INSERT_ROWS' },
+    body: { values: rowsOfCells },
+  });
+  const row = parseRowNumber(data.updates?.updatedRange);
+  if (row === null) throw new Error(`Sheets append did not return a row range for ${tab}`);
+  return row;
+}
+
+/**
+ * Overwrites many known rows across any tabs in ONE request.
+ *
+ * This is what keeps bulk edits under Google's per-minute write quota: a
+ * category reorder touching six rows costs one call here instead of six.
+ */
+export async function batchUpdateValues(entries) {
+  if (!entries.length) return;
+  await api('/values:batchUpdate', {
+    method: 'POST',
+    body: {
+      valueInputOption: 'RAW',
+      data: entries.map((e) => ({
+        range: `${e.tab}!A${e.row}`,
+        values: [e.cells],
+      })),
+    },
+  });
 }
 
 /** Overwrites one specific, already-known row. */
