@@ -21,10 +21,10 @@
 import * as repo from '../repo.js';
 import * as taxonomy from '../taxonomy.js';
 import { parseNum } from '../schema.js';
-import { iconPicker, colourPicker } from './pickers.js';
 import {
   INDENT_PX, attachTreeDrag, deriveTree, categoryBadge, rowTint,
 } from './cattree.js';
+import { categoryFields, field } from './catfields.js';
 import { buildGroups } from '../stock.js';
 import {
   el, clear, toast, openModal, confirmDialog, emptyState, fmtNumber,
@@ -354,30 +354,7 @@ export function renderInventoryCategories(container) {
         ]),
       ]),
 
-      el('div', { class: 'cat-detail-body' }, [
-        field('Name', el('input', {
-          class: 'input',
-          type: 'text',
-          value: cat.name || '',
-          oninput: (e) => set('name', e.target.value),
-        }), { required: true }),
-
-        field('Icon', iconPicker(cat.icon_key, (v) => set('icon_key', v))),
-        field('Colour', colourPicker(cat.color_hex, (v) => set('color_hex', v))),
-
-        field('Keep at least', el('input', {
-          class: 'input',
-          type: 'number',
-          min: '0',
-          value: String(parseNum(cat.min_threshold) || ''),
-          placeholder: '0',
-          oninput: (e) => set('min_threshold', parseNum(e.target.value)),
-        }), {
-          hint: 'Counts everything in this category together, whatever the brand. '
-            + 'Set 2 on "Toothbrush" and one spare of each of two brands is enough. '
-            + 'Leave at 0 to judge each item on its own.',
-        }),
-      ]),
+      el('div', { class: 'cat-detail-body' }, categoryFields(cat, set)),
 
       threshold > 0
         ? el('div', {
@@ -586,12 +563,4 @@ export function renderInventoryCategories(container) {
 function bySortOrder(a, b) {
   const d = parseNum(a.sort_order) - parseNum(b.sort_order);
   return d !== 0 ? d : (a.name || '').localeCompare(b.name || '');
-}
-
-function field(label, control, { required = false, hint = '' } = {}) {
-  return el('div', { class: 'field' }, [
-    el('label', { text: label + (required ? ' *' : '') }),
-    control,
-    hint ? el('div', { class: 'hint', text: hint }) : null,
-  ]);
 }

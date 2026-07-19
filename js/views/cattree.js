@@ -86,6 +86,15 @@ export function rowTint(colourHex, depth) {
  *   getWorking()/setWorking(next)  the buffer being rearranged
  *   nameOf(id)  display name, for the "↳ subcategory of X" hint
  *   onDrop()    called once the buffer has been updated
+ *   limitDepth(ctx) optional; final say on where a row may land
+ *   hintFor(ctx)    optional; overrides the floating drag caption
+ *
+ * limitDepth exists because a list can hold rows of more than one kind. The
+ * inventory tree mixes categories with the items filed inside them, and an
+ * item may never sit at the top level nor take children of its own — rules the
+ * generic "one deeper than the row above" clamp knows nothing about. It
+ * receives { id, wanted, aboveId, aboveDepth, defaultMax } and returns the
+ * depth to use. Omit it and the generic clamp applies unchanged.
  *
  * Rows must carry data-id and data-depth, and be styled with --indent.
  */
@@ -101,6 +110,7 @@ export function attachTreeDrag(list, opts) {
 function startDrag(list, row, downEvent, opts) {
   const {
     maxDepth, depthNames, getWorking, setWorking, nameOf, onDrop,
+    limitDepth, hintFor,
   } = opts;
 
   const rows = [...list.querySelectorAll('.cat-row')];
@@ -154,6 +164,16 @@ function startDrag(list, row, downEvent, opts) {
     const wanted = Math.round((baseIndent + dx) / INDENT_PX);
     dropDepth = Math.max(0, Math.min(wanted, Math.max(0, allowed)));
 
+    if (limitDepth) {
+      dropDepth = limitDepth({
+        id: row.dataset.id,
+        wanted: dropDepth,
+        aboveId: above ? above.el.dataset.id : '',
+        aboveDepth,
+        defaultMax: Math.max(0, allowed),
+      });
+    }
+
     // Dropping a shallower row inside a deeper subtree would re-parent the
     // rest of it; snap past those rows to a boundary instead.
     let scan = insertAt;
@@ -167,9 +187,12 @@ function startDrag(list, row, downEvent, opts) {
       m.el.style.transform = i >= insertAt ? `translateY(${groupHeight}px)` : '';
     });
 
-    hint.textContent = dropDepth === 0
-      ? `↤ top-level ${depthNames[0]}`
-      : `↳ ${depthNames[dropDepth]} of ${parentNameAt(metrics, insertAt, dropDepth, nameOf)}`;
+    const parentName = parentNameAt(metrics, insertAt, dropDepth, nameOf);
+    hint.textContent = hintFor
+      ? hintFor({ id: row.dataset.id, depth: dropDepth, parentName })
+      : (dropDepth === 0
+        ? `↤ top-level ${depthNames[0]}`
+        : `↳ ${depthNames[dropDepth]} of ${parentName}`);
     hint.classList.toggle('is-child', dropDepth > 0);
     hint.style.left = `${e.clientX + 16}px`;
     hint.style.top = `${e.clientY + 18}px`;
