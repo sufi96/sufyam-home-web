@@ -222,7 +222,9 @@ function startDrag(list, row, downEvent, opts) {
     moved.forEach((w, i) => { w.depth = dropDepth + (i === 0 ? 0 : w.depth - depth); });
     setWorking([...remaining.slice(0, at), ...moved, ...remaining.slice(at)]);
 
-    onDrop();
+    // The dragged row's id, because a list holding more than one kind of row
+    // needs to know which kind just moved to work out what that means.
+    onDrop({ id: row.dataset.id, depth: dropDepth });
   };
 
   window.addEventListener('pointermove', onMove);

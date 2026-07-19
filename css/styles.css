@@ -2441,22 +2441,47 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
   border-top: 1px solid var(--border);
 }
 
-/* ---------- inventory tree: items as a rung below categories ---------- */
+/* ---------- inventory tree ---------- */
 
-/* Three kinds of row share this list, so each needs to read as its own kind
-   before you've read a word of it:
-     category     filled with its own colour (from rowTint)
-     subcategory  a wash of that colour
-     item         no fill at all, just a thin edge in the parent's colour
-   Indentation alone wasn't enough — with a long list you lose track of which
-   level you're looking at halfway down. */
+/* Three kinds of row share one list, so each has to read as its own kind
+   before you've read a word of it. Indentation alone stopped working halfway
+   down a long list — by then you've lost track of what level you're on. */
+
+/* A category heading sticks to the top while you scroll its contents, so the
+   answer to "what am I looking at" is always on screen. Subcategories stick
+   just below the parent's height. */
+.inv-tree .cat-row.is-cat {
+  position: sticky;
+  z-index: 2;
+}
+.inv-tree .cat-row.is-cat.depth-0 { top: 0; }
+.inv-tree .cat-row.is-cat.depth-1 { top: 42px; z-index: 1; }
+
+/* Dragging must not leave a row pinned mid-gesture. */
+.inv-tree.is-dragging-active .cat-row.is-cat { position: relative; top: auto; }
+
+/* Items: no fill of their own, a thin edge in the parent's colour, and a
+   background one step back from the surface so a run of them reads as a block
+   sitting inside the category above rather than as more headings. */
 .cat-row.stock-item {
   background: var(--surface);
   border-left: 3px solid var(--item-accent, var(--border));
+  box-shadow: inset 0 -1px 0 var(--border);
   font-size: 13px;
   min-height: 38px;
+  border-radius: 0;
+  margin-top: 0;
 }
 .cat-row.stock-item:hover { background: var(--surface-2); }
+
+/* Rounds off the last item of a run, so each category's block has an end. */
+.cat-row.stock-item:last-child,
+.cat-row.stock-item:has(+ .cat-row.is-cat) {
+  border-bottom-left-radius: var(--radius);
+  border-bottom-right-radius: var(--radius);
+  box-shadow: none;
+  margin-bottom: 10px;
+}
 
 .cat-row.stock-item .item-dot {
   width: 7px;
@@ -2464,31 +2489,68 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
   border-radius: 50%;
   flex: 0 0 auto;
   background: var(--item-accent, var(--border));
-  opacity: .75;
+  opacity: .8;
 }
 
 .item-name {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 7px;
   flex-wrap: wrap;
-  font-weight: 500;
+  min-width: 0;
 }
-.item-name .brand { font-size: 12px; color: var(--text-dim); font-weight: 600; }
+.item-label { font-weight: 500; }
 .item-name .variant { font-size: 11.5px; color: var(--text-dim); }
 
-/* The selected row has to stand out against three different backgrounds. */
-.cat-row.is-selected {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+/* Brand as a gold badge: it's the thing you scan for when two rows are
+   otherwise the same item, so it gets a colour nothing else in the row uses. */
+.brand-badge {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .01em;
+  padding: 1px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: color-mix(in srgb, #b8860b 16%, transparent);
+  color: #8a6508;
+  border: 1px solid color-mix(in srgb, #b8860b 34%, transparent);
+}
+:root[data-theme="dark"] .brand-badge { background: color-mix(in srgb, #e8b93a 15%, transparent); color: #e8b93a; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .brand-badge {
+    background: color-mix(in srgb, #e8b93a 15%, transparent);
+    color: #e8b93a;
+  }
 }
 
-/* Two fields side by side — stock and its unit belong together. */
-.field-row {
-  display: grid;
-  grid-template-columns: 1fr 110px;
-  gap: 10px;
+/* The collapse twisty. */
+.twisty {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 5px;
+  opacity: .7;
+  transition: transform .15s ease, opacity .15s ease;
 }
+.twisty:hover { opacity: 1; background: color-mix(in srgb, currentColor 14%, transparent); }
+.twisty.is-collapsed { transform: rotate(-90deg); }
+
+.chip-muted { background: var(--surface-2); color: var(--text-dim); }
+
+/* The selected row has to stand out against three different backgrounds. */
+.cat-row.is-selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Two fields side by side — stock and its unit belong together. */
+.field-row { display: grid; grid-template-columns: 1fr 110px; gap: 10px; }
 .field-row .field { margin-bottom: 14px; }
 
 .cat-detail-body .toggle-row { margin-bottom: 10px; }

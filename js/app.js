@@ -10,7 +10,6 @@ import { renderEntity } from './views/entity.js';
 import { renderCategories } from './views/categories.js';
 import { renderNotes } from './views/notes.js';
 import { renderInventory } from './views/inventory.js';
-import { renderInventoryCategories } from './views/inventory_categories.js';
 import { renderDashboard } from './views/dashboard.js';
 import { renderSettings } from './views/settings.js';
 import { el, clear, toast, spinner } from './ui.js';
@@ -23,28 +22,16 @@ const ICONS = {
   Notes: 'sticky_note_2',
   Transactions: 'receipt_long',
   Inventory: 'inventory_2',
-  InventoryCategories: 'sell',
   Stock_Movements: 'swap_horiz',
   Records_Reminders: 'event_repeat',
   Budgets: 'savings',
   Taxonomy: 'style',
 };
 
-// Stock categories earns its own entry rather than sitting behind a button on
-// the Inventory page: filing things away is a session of its own, and reaching
-// it through another screen made it feel like a settings page.
-const STOCK_CATEGORIES = 'InventoryCategories';
-
-const ROUTES = (() => {
-  const out = [{ id: 'dashboard', label: 'Dashboard' }];
-  for (const tab of TABS) {
-    out.push({ id: tab.tab, label: tab.label });
-    if (tab.tab === 'Inventory') {
-      out.push({ id: STOCK_CATEGORIES, label: 'Stock categories' });
-    }
-  }
-  return out;
-})();
+const ROUTES = [
+  { id: 'dashboard', label: 'Dashboard' },
+  ...TABS.map((t) => ({ id: t.tab, label: t.label })),
+];
 
 const view = document.getElementById('view');
 const nav = document.getElementById('nav');
@@ -112,7 +99,6 @@ function render() {
   else if (current === 'Categories') renderCategories(view);
   else if (current === 'Notes') renderNotes(view);
   else if (current === 'Inventory') renderInventory(view);
-  else if (current === STOCK_CATEGORIES) renderInventoryCategories(view);
   else renderEntity(view, current);
 }
 
