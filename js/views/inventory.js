@@ -13,8 +13,9 @@ import * as taxonomy from '../taxonomy.js';
 import { schemaFor, parseBool, parseNum } from '../schema.js';
 import { buildGroups, stockStatus } from '../stock.js';
 import { glyphFor } from '../icons.js';
+import { normaliseHex } from './cattree.js';
 import { openForm } from './entity.js';
-import { openCategoryManager } from './inventory_categories.js';
+import { renderInventoryCategories } from './inventory_categories.js';
 import { el, clear, toast, confirmDialog, emptyState, fmtDate, fmtNumber } from '../ui.js';
 
 const KIND = taxonomy.KIND_INVENTORY_CATEGORY;
@@ -62,7 +63,12 @@ export function renderInventory(container) {
       el('button', {
         class: 'btn btn-ghost',
         text: 'Manage categories',
-        onclick: () => openCategoryManager(paint),
+        // Takes over the page rather than opening a dialog: it's the same
+        // editor as expense categories, and dragging a tree inside a modal
+        // meant two scroll regions fighting each other.
+        onclick: () => renderInventoryCategories(container, {
+          onBack: () => { clear(container); renderInventory(container); },
+        }),
       }),
       el('button', {
         class: 'btn',
@@ -197,11 +203,22 @@ function heading(entry, items, groups, depth) {
     return l === 'low' || l === 'out';
   }).length;
 
-  return el('div', { class: `stock-group-head depth-${depth}` }, [
+  // Tinted with the category's own colour, the same colour the tree editor
+  // fills its rows with — so a category is recognisable by colour in both
+  // places rather than only where you set it.
+  const colour = normaliseHex(entry.color_hex);
+
+  return el('div', {
+    class: `stock-group-head depth-${depth}`,
+    style: colour
+      ? `--cat-colour:${colour};`
+        + `background:color-mix(in srgb, ${colour} ${depth ? 7 : 14}%, var(--surface));`
+      : '',
+  }, [
     el('span', {
       class: 'micon cat-icon',
       text: glyphFor(entry.icon_key || 'category'),
-      style: entry.color_hex ? `color:${entry.color_hex}` : '',
+      style: colour ? `color:${colour}` : '',
     }),
     el(depth ? 'h4' : 'h3', { text: entry.name }),
     el('span', { class: 'count', text: String(items.length) }),

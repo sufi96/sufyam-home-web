@@ -21,6 +21,9 @@ import { parseNum } from '../schema.js';
 import { iconEl, isKnownIcon } from '../icons.js';
 import { iconPicker, labelPicker } from './pickers.js';
 import {
+  INDENT_PX, attachTreeDrag, deriveTree, categoryBadge, rowTint, normaliseHex,
+} from './cattree.js';
+import {
   el, clear, toast, openModal, confirmDialog, emptyState,
   fmtMoney, fmtDate, fmtDateTime, toDateTimeInput,
 } from '../ui.js';
@@ -31,7 +34,6 @@ const TYPES = [
 ];
 
 const MAX_DEPTH = 2;
-const INDENT_PX = 26;
 const DEPTH_NAMES = ['category', 'subcategory', 'sub-subcategory'];
 
 export function renderCategories(container) {
@@ -142,23 +144,7 @@ export function renderCategories(container) {
 
   /** parent_id + sort_order implied by the current working order. */
   function derive() {
-    const out = new Map();
-    const parentAt = [];
-    const counters = new Map();
-    let prevDepth = -1;
-
-    for (const { id, depth: raw } of working) {
-      const depth = Math.max(0, Math.min(raw, prevDepth + 1, MAX_DEPTH));
-      const parentId = depth === 0 ? '' : (parentAt[depth - 1] || '');
-      const key = parentId || '__root__';
-      const sortOrder = (counters.get(key) || 0) + 1;
-      counters.set(key, sortOrder);
-      parentAt[depth] = id;
-      parentAt.length = depth + 1;
-      prevDepth = depth;
-      out.set(id, { parent_id: parentId, sort_order: sortOrder, depth });
-    }
-    return out;
+    return deriveTree(working, MAX_DEPTH);
   }
 
   /** Rows whose buffered state differs from what's in the sheet. */
@@ -347,18 +333,7 @@ export function renderCategories(container) {
       });
     });
 
-    // Top-level rows are filled with their own colour, label and icon flipped
-    // to whichever of black/white actually reads on it. Indentation and weight
-    // alone weren't enough to separate three levels at a glance.
-    const colour = normaliseHex(cat.color_hex) || '#7a8794';
-    const fg = contrastOn(colour);
-    const tint = shownDepth === 0
-      ? `--row-bg:${colour};--row-fg:${fg};--row-accent:${colour};`
-        // Hover mixes toward the text colour: a dark row lightens, a pale row
-        // darkens. Brightening both ways left pale rows looking unhovered.
-        + `--row-hover:color-mix(in srgb, ${colour} 88%, ${fg});`
-      : `--row-bg:color-mix(in srgb, ${colour} ${shownDepth === 1 ? 15 : 7}%, var(--surface));`
-        + `--row-fg:var(--text);--row-accent:${colour};`;
+    const tint = rowTint(cat.color_hex, shownDepth);
 
     const row = el('div', {
       class: `cat-row depth-${shownDepth}${id === selectedId ? ' is-selected' : ''}`,
@@ -772,20 +747,6 @@ export function renderCategories(container) {
   }
 
   /** Coloured icon badge used everywhere a category is shown. */
-  function categoryBadge(cat, size = 26, { onColour = false } = {}) {
-    const colour = normaliseHex(cat.color_hex) || '#7a8794';
-    // On a filled row the badge sits on the category colour, so it borrows the
-    // row's contrast colour rather than the hue it would vanish into.
-    const bg = onColour
-      ? 'color-mix(in srgb, var(--row-fg) 20%, transparent)'
-      : `color-mix(in srgb, ${colour} 18%, transparent)`;
-    return el('span', {
-      class: 'cat-badge',
-      style: `width:${size}px;height:${size}px;background:${bg};`
-        + `color:${onColour ? 'var(--row-fg)' : colour}`,
-    }, [iconEl(cat.icon_key, { size: Math.round(size * 0.62) })]);
-  }
-
   // ---------- orphans ----------
 
   function buildOrphanCard(orphans, usage) {
@@ -854,123 +815,15 @@ export function renderCategories(container) {
   // ---------- drag ----------
 
   function attachDrag(list) {
-    list.addEventListener('pointerdown', (e) => {
-      const handle = e.target.closest('.drag-handle');
-      if (!handle || saving || e.button !== 0) return;
-      e.preventDefault();
-      startDrag(list, handle.closest('.cat-row'), e);
+    attachTreeDrag(list, {
+      maxDepth: MAX_DEPTH,
+      depthNames: DEPTH_NAMES,
+      isBusy: () => saving,
+      getWorking: () => working,
+      setWorking: (next) => { working = next; },
+      nameOf: (id) => renames.get(id) ?? repo.byId('Categories', id)?.name ?? '',
+      onDrop: paintTree,
     });
-  }
-
-  function startDrag(list, row, downEvent) {
-    const rows = [...list.querySelectorAll('.cat-row')];
-    const index = rows.indexOf(row);
-    const depth = Number(row.dataset.depth);
-
-    let span = 1;
-    while (index + span < rows.length && Number(rows[index + span].dataset.depth) > depth) span++;
-    const group = rows.slice(index, index + span);
-    const rest = rows.filter((r) => !group.includes(r));
-    const deepest = group.reduce((m, r) => Math.max(m, Number(r.dataset.depth)), depth);
-    const subtreeHeight = deepest - depth;
-
-    const listRect = list.getBoundingClientRect();
-    const metrics = rest.map((r) => {
-      const rect = r.getBoundingClientRect();
-      return { el: r, top: rect.top - listRect.top, height: rect.height };
-    });
-    const groupHeight = group.reduce((h, r) => h + r.getBoundingClientRect().height, 0);
-    const startY = downEvent.clientY;
-    const startX = downEvent.clientX;
-    const baseIndent = depth * INDENT_PX;
-
-    group.forEach((r) => r.classList.add('is-dragging'));
-    rest.forEach((r) => r.classList.add('is-shifting'));
-    list.classList.add('is-dragging-active');
-    document.body.style.userSelect = 'none';
-
-    const hint = el('div', { class: 'drag-hint' });
-    document.body.append(hint);
-
-    let insertAt = 0;
-    let dropDepth = depth;
-
-    const onMove = (e) => {
-      const dy = e.clientY - startY;
-      const dx = e.clientX - startX;
-      const rect = list.getBoundingClientRect();
-      const pointerY = e.clientY - rect.top;
-
-      insertAt = 0;
-      for (const m of metrics) {
-        if (pointerY > m.top + m.height / 2) insertAt++;
-        else break;
-      }
-
-      const above = metrics[insertAt - 1];
-      const aboveDepth = above ? Number(above.el.dataset.depth) : -1;
-      const maxDepth = Math.min(aboveDepth + 1, MAX_DEPTH - subtreeHeight);
-      const wanted = Math.round((baseIndent + dx) / INDENT_PX);
-      dropDepth = Math.max(0, Math.min(wanted, Math.max(0, maxDepth)));
-
-      // Dropping a shallower row inside a deeper subtree would re-parent the
-      // rest of it; snap past those rows to a boundary instead.
-      let scan = insertAt;
-      while (scan < metrics.length && Number(metrics[scan].el.dataset.depth) > dropDepth) scan++;
-      insertAt = scan;
-
-      group.forEach((r) => {
-        r.style.transform = `translate(${(dropDepth - depth) * INDENT_PX}px, ${dy}px)`;
-      });
-      metrics.forEach((m, i) => {
-        m.el.style.transform = i >= insertAt ? `translateY(${groupHeight}px)` : '';
-      });
-
-      hint.textContent = dropDepth === 0
-        ? '↤ top-level category'
-        : `↳ ${DEPTH_NAMES[dropDepth]} of ${parentNameAt(metrics, insertAt, dropDepth)}`;
-      hint.classList.toggle('is-child', dropDepth > 0);
-      hint.style.left = `${e.clientX + 16}px`;
-      hint.style.top = `${e.clientY + 18}px`;
-    };
-
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onUp);
-      hint.remove();
-      document.body.style.userSelect = '';
-      list.classList.remove('is-dragging-active');
-      group.forEach((r) => { r.classList.remove('is-dragging'); r.style.transform = ''; });
-      metrics.forEach((m) => { m.el.classList.remove('is-shifting'); m.el.style.transform = ''; });
-
-      // Buffer only — nothing is written until Save.
-      const ids = new Set(group.map((r) => r.dataset.id));
-      const moved = working.filter((w) => ids.has(w.id));
-      const remaining = working.filter((w) => !ids.has(w.id));
-      const restIds = rest.map((r) => r.dataset.id);
-      const anchor = restIds[insertAt - 1];
-      const at = anchor ? remaining.findIndex((w) => w.id === anchor) + 1 : 0;
-
-      moved.forEach((w, i) => { w.depth = dropDepth + (i === 0 ? 0 : w.depth - depth); });
-      working = [...remaining.slice(0, at), ...moved, ...remaining.slice(at)];
-
-      paintTree();
-    };
-
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onUp);
-  }
-
-  function parentNameAt(metrics, insertAt, dropDepth) {
-    for (let i = insertAt - 1; i >= 0; i--) {
-      if (Number(metrics[i].el.dataset.depth) === dropDepth - 1) {
-        const id = metrics[i].el.dataset.id;
-        return renames.get(id) ?? repo.byId('Categories', id)?.name ?? '';
-      }
-    }
-    return '';
   }
 
   // ---------- helpers bound to this view ----------
@@ -1376,26 +1229,5 @@ function nextSortOrder(parentId) {
   return siblings.reduce((max, c) => Math.max(max, parseNum(c.sort_order)), 0) + 1;
 }
 
-/**
- * Black or white, whichever is readable on `hex`. Uses WCAG relative
- * luminance, so a pale yellow gets dark text and a deep navy gets white,
- * rather than both being guessed from the hue.
- */
-function contrastOn(hex) {
-  const h = normaliseHex(hex) || '#7a8794';
-  const channel = (pair) => {
-    const c = parseInt(pair, 16) / 255;
-    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-  };
-  const luminance = 0.2126 * channel(h.slice(1, 3))
-    + 0.7152 * channel(h.slice(3, 5))
-    + 0.0722 * channel(h.slice(5, 7));
-  return luminance > 0.45 ? '#10171e' : '#ffffff';
-}
-
-function normaliseHex(v) {
-  const s = String(v || '').trim();
-  if (!s) return '';
-  const hex = s.startsWith('#') ? s.slice(1) : s;
-  return /^[0-9a-fA-F]{6}$/.test(hex) ? `#${hex.toLowerCase()}` : '';
-}
+// contrastOn / normaliseHex / categoryBadge / rowTint now live in cattree.js,
+// shared with the inventory category tree.
