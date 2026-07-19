@@ -28,10 +28,42 @@ const ICONS = {
   Taxonomy: 'style',
 };
 
-const ROUTES = [
-  { id: 'dashboard', label: 'Dashboard' },
-  ...TABS.map((t) => ({ id: t.tab, label: t.label })),
+// Grouped rather than one flat list of nine. The tabs fall into a few clear
+// jobs — what you spent, what you have, what you need to remember — and a
+// heading over each makes the sidebar something you aim at rather than read
+// top to bottom every time.
+//
+// Order within a group goes broad first: Categories before Expenses, because
+// that's the order you set them up in.
+const NAV_GROUPS = [
+  { label: '', tabs: ['dashboard'] },
+  { label: 'Spending', tabs: ['Categories', 'Transactions'] },
+  { label: 'Stock', tabs: ['Inventory', 'Stock_Movements'] },
+  // Notes and renewals are both "things the household has to remember" —
+  // the wifi password and when the road tax is due sit in the same drawer.
+  { label: 'Household', tabs: ['Notes', 'Records_Reminders'] },
+  // Neither is a place you go often; both configure how the rest behaves.
+  { label: 'Setup', tabs: ['Budgets', 'Taxonomy'] },
 ];
+
+const LABELS = new Map([
+  ['dashboard', 'Dashboard'],
+  ...TABS.map((t) => [t.tab, t.label]),
+]);
+
+const ROUTES = NAV_GROUPS.flatMap((g) => g.tabs.map((id) => ({
+  id,
+  label: LABELS.get(id) || id,
+})));
+
+// A tab added to schema.js but not placed in a group above would otherwise
+// vanish from the sidebar entirely — no error, just an unreachable page.
+for (const tab of TABS) {
+  if (!ROUTES.some((r) => r.id === tab.tab)) {
+    ROUTES.push({ id: tab.tab, label: tab.label });
+    NAV_GROUPS[NAV_GROUPS.length - 1].tabs.push(tab.tab);
+  }
+}
 
 const view = document.getElementById('view');
 const nav = document.getElementById('nav');
@@ -62,13 +94,19 @@ function initTheme() {
 
 function buildNav() {
   clear(nav);
-  for (const route of ROUTES) {
-    nav.append(el('button', {
-      class: `nav-item${route.id === current ? ' active' : ''}`,
-      onclick: () => go(route.id),
-    }, [
-      el('span', { class: 'micon nav-icon', text: ICONS[route.id] || 'circle' }),
-      route.label,
+  for (const group of NAV_GROUPS) {
+    const items = group.tabs.filter((id) => ROUTES.some((r) => r.id === id));
+    if (!items.length) continue;
+
+    nav.append(el('div', { class: `nav-group${group.label ? '' : ' is-bare'}` }, [
+      group.label ? el('div', { class: 'nav-group-label', text: group.label }) : null,
+      ...items.map((id) => el('button', {
+        class: `nav-item${id === current ? ' active' : ''}`,
+        onclick: () => go(id),
+      }, [
+        el('span', { class: 'micon nav-icon', text: ICONS[id] || 'circle' }),
+        LABELS.get(id) || id,
+      ])),
     ]));
   }
 }
