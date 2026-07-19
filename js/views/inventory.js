@@ -1,20 +1,24 @@
-// Inventory, grouped by category, built for a stock-take: the thing you do
-// most while walking round the house is adjust a count, so that's a button on
-// every row rather than a trip through the edit form.
+// Inventory, grouped by the category tree, built for a stock-take: the thing
+// you do most while walking round the house is adjust a count, so that's a
+// button on every row rather than a trip through the edit form.
 //
 // The generic table in entity.js can't show this one honestly. A row's own
-// numbers don't decide whether it's low — items sharing a stock group are
-// judged on their pooled total (see stock.js) — so a per-row "2 / 3" column
-// would be actively misleading for exactly the items the grouping exists for.
+// numbers don't decide whether it's low — a category that sets "keep at least
+// N" counts everything inside it together (see stock.js) — so a per-row "1 / 2"
+// column would be actively misleading for exactly the items that rule exists
+// for. Here the pooled figure sits on the category heading, where it applies.
 
 import * as repo from '../repo.js';
 import * as taxonomy from '../taxonomy.js';
 import { schemaFor, parseBool, parseNum } from '../schema.js';
-import { buildGroups, stockStatus, groupKeyOf } from '../stock.js';
+import { buildGroups, stockStatus } from '../stock.js';
+import { glyphFor } from '../icons.js';
 import { openForm } from './entity.js';
+import { openCategoryManager } from './inventory_categories.js';
 import { el, clear, toast, confirmDialog, emptyState, fmtDate, fmtNumber } from '../ui.js';
 
-const UNCATEGORISED = 'Uncategorised';
+const KIND = taxonomy.KIND_INVENTORY_CATEGORY;
+const UNCATEGORISED = '__none__';
 
 export function renderInventory(container) {
   const schema = schemaFor('Inventory');
@@ -27,13 +31,13 @@ export function renderInventory(container) {
   const search = el('input', {
     class: 'input search',
     type: 'search',
-    placeholder: 'Search items, brands, groups…',
+    placeholder: 'Search items, brands, categories…',
     oninput: (e) => { query = e.target.value.trim().toLowerCase(); paint(); },
   });
 
   const filterSelect = el('select', {
     class: 'select',
-    style: 'max-width:190px',
+    style: 'max-width:180px',
     onchange: (e) => { filter = e.target.value; paint(); },
   }, [
     el('option', { value: 'all', text: 'Everything' }),
@@ -56,6 +60,11 @@ export function renderInventory(container) {
       deletedToggle,
       el('div', { class: 'spacer' }),
       el('button', {
+        class: 'btn btn-ghost',
+        text: 'Manage categories',
+        onclick: () => openCategoryManager(paint),
+      }),
+      el('button', {
         class: 'btn',
         text: '+ New item',
         onclick: () => openForm(schema, null, paint),
@@ -68,12 +77,13 @@ export function renderInventory(container) {
 
   function paint() {
     const all = repo.rows('Inventory', { includeDeleted: showDeleted });
-    // Groups are built from every live item, not the filtered set: a group's
-    // total has to count the members a search happens to be hiding, or
-    // filtering the list would change what counts as low.
-    const groups = buildGroups(repo.rows('Inventory'));
+    const categories = taxonomy.list(KIND);
+    // Pools are built from every live item, not the filtered set: a category's
+    // total has to count the items a search happens to be hiding, or filtering
+    // the list would change what counts as low.
+    const groups = buildGroups(repo.rows('Inventory'), categories);
 
-    const list = all.filter((item) => {
+    const visible = all.filter((item) => {
       if (query && !blob(item).includes(query)) return false;
       if (filter === 'all') return true;
       const level = stockStatus(item, groups).level;
@@ -83,7 +93,7 @@ export function renderInventory(container) {
 
     clear(listWrap);
 
-    if (!list.length) {
+    if (!visible.length) {
       listWrap.append(emptyState(
         '📦',
         all.length ? 'Nothing matches that.' : 'No stock items yet.',
@@ -96,80 +106,122 @@ export function renderInventory(container) {
       return;
     }
 
-    for (const [category, items] of byCategory(list)) {
-      listWrap.append(categorySection(category, items, groups, paint));
+    for (const section of sections(visible, categories)) {
+      listWrap.append(renderSection(section, groups, paint));
     }
   }
 }
 
-/** Category name -> items, ordered the way the taxonomy bank is ordered. */
-function byCategory(items) {
-  const buckets = new Map();
+/**
+ * Arranges the visible items into the category tree.
+ *
+ * Returns [{ entry, items, subs: [{ entry, items }] }], parents in bank order
+ * with an "Uncategorised" bucket last. Items sitting directly on a parent and
+ * items in its subcategories both appear under that parent, the latter under
+ * their own subheading.
+ */
+function sections(items, categories) {
+  const byName = new Map(categories.map((c) => [c.name.trim().toLowerCase(), c]));
+  const buckets = new Map(); // category id (or UNCATEGORISED) -> items
+
   for (const item of items) {
-    const name = String(item.category || '').trim() || UNCATEGORISED;
-    if (!buckets.has(name)) buckets.set(name, []);
-    buckets.get(name).push(item);
+    const cat = byName.get(String(item.category || '').trim().toLowerCase());
+    const key = cat ? cat.id : UNCATEGORISED;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(item);
   }
 
-  const rank = new Map(
-    taxonomy.names(taxonomy.KIND_INVENTORY_CATEGORY).map((n, i) => [n.toLowerCase(), i]),
+  const sortItems = (list) => list.sort(
+    (a, b) => String(a.item_name || '').localeCompare(String(b.item_name || '')),
   );
-  const order = (name) => (name === UNCATEGORISED
-    ? Number.MAX_SAFE_INTEGER // always last, whatever it's called
-    : rank.get(name.toLowerCase()) ?? Number.MAX_SAFE_INTEGER - 1);
 
-  const sorted = [...buckets.entries()].sort((a, b) => {
-    const d = order(a[0]) - order(b[0]);
-    return d !== 0 ? d : a[0].localeCompare(b[0]);
-  });
+  const out = [];
+  for (const { entry, children } of taxonomy.tree(KIND)) {
+    const own = buckets.get(entry.id) || [];
+    const subs = children
+      .map((child) => ({ entry: child, items: sortItems(buckets.get(child.id) || []) }))
+      .filter((s) => s.items.length || parseNum(s.entry.min_threshold) > 0);
 
-  for (const [, list] of sorted) {
-    list.sort((a, b) => {
-      // Grouped items sit together, under the group's name.
-      const g = groupKeyOf(a).localeCompare(groupKeyOf(b));
-      if (g !== 0) return g;
-      return String(a.item_name || '').localeCompare(String(b.item_name || ''));
-    });
+    // A category with nothing in it and no rule to state is just noise.
+    if (!own.length && !subs.length) continue;
+    out.push({ entry, items: sortItems(own), subs });
   }
-  return sorted;
+
+  const loose = buckets.get(UNCATEGORISED) || [];
+  if (loose.length) {
+    out.push({ entry: null, items: sortItems(loose), subs: [] });
+  }
+  return out;
 }
 
-function categorySection(category, items, groups, refresh) {
-  const meta = taxonomy.list(taxonomy.KIND_INVENTORY_CATEGORY)
-    .find((t) => t.name.toLowerCase() === category.toLowerCase());
-  const colour = meta?.color_hex || '';
+function renderSection({ entry, items, subs }, groups, refresh) {
+  const children = [
+    heading(entry, items, groups, 0),
+    items.length ? el('div', { class: 'stock-rows' }, items.map(
+      (item) => itemRow(item, groups, refresh),
+    )) : null,
+  ];
 
+  for (const sub of subs) {
+    children.push(heading(sub.entry, sub.items, groups, 1));
+    if (sub.items.length) {
+      children.push(el('div', { class: 'stock-rows' }, sub.items.map(
+        (item) => itemRow(item, groups, refresh),
+      )));
+    } else {
+      children.push(el('div', { class: 'stock-empty-sub', text: 'Nothing here yet.' }));
+    }
+  }
+
+  return el('section', { class: 'stock-group' }, children);
+}
+
+/**
+ * A category heading. When the category sets a "keep at least" number, the
+ * pooled figure goes here rather than on the rows, because here is where it's
+ * true — it's a statement about the category, not about any one item.
+ */
+function heading(entry, items, groups, depth) {
+  if (!entry) {
+    return el('div', { class: 'stock-group-head' }, [
+      el('span', { class: 'micon cat-icon', text: 'help_outline' }),
+      el('h3', { text: 'Uncategorised' }),
+      el('span', { class: 'count', text: String(items.length) }),
+    ]);
+  }
+
+  const group = groups.get(entry.id);
+  const threshold = parseNum(entry.min_threshold);
   const short = items.filter((i) => {
     const l = stockStatus(i, groups).level;
     return l === 'low' || l === 'out';
   }).length;
 
-  return el('section', { class: 'stock-group' }, [
-    el('div', { class: 'stock-group-head' }, [
-      colour ? el('span', { class: 'dot', style: `background:${colour}` }) : null,
-      el('h3', { text: category }),
-      el('span', { class: 'count', text: `${items.length}` }),
-      short ? el('span', { class: 'pill pill-low', text: `${short} to buy` }) : null,
-    ]),
-    el('div', { class: 'stock-rows' }, items.map(
-      (item) => itemRow(item, groups, refresh, items),
-    )),
+  return el('div', { class: `stock-group-head depth-${depth}` }, [
+    el('span', {
+      class: 'micon cat-icon',
+      text: glyphFor(entry.icon_key || 'category'),
+      style: entry.color_hex ? `color:${entry.color_hex}` : '',
+    }),
+    el(depth ? 'h4' : 'h3', { text: entry.name }),
+    el('span', { class: 'count', text: String(items.length) }),
+    threshold > 0
+      ? el('span', {
+          class: `pill ${group && group.stock < threshold ? 'pill-low' : 'pill-ok'}`,
+          text: `${fmtNumber(group ? group.stock : 0)} of ${fmtNumber(threshold)} together`,
+          title: 'Everything in this category counts towards one total, '
+            + 'whatever the brand or variant.',
+        })
+      : (short ? el('span', { class: 'pill pill-low', text: `${short} to buy` }) : null),
   ]);
 }
 
-function itemRow(item, groups, refresh, siblings) {
+function itemRow(item, groups, refresh) {
   const status = stockStatus(item, groups);
   const deleted = parseBool(item.is_deleted);
   const unit = item.unit || '';
 
-  // Only the first member of a group carries the group's summary, so a group
-  // of five variants doesn't repeat the same "3 of 2" five times.
-  const isGroupLead = status.grouped
-    && siblings.find((s) => groupKeyOf(s) === status.group.key) === item;
-
-  return el('div', {
-    class: `stock-row${deleted ? ' is-deleted' : ''}`,
-  }, [
+  return el('div', { class: `stock-row${deleted ? ' is-deleted' : ''}` }, [
     el('div', { class: 'stock-main' }, [
       el('div', { class: 'stock-title' }, [
         el('span', { class: 'name', text: item.item_name || '(unnamed)' }),
@@ -177,23 +229,17 @@ function itemRow(item, groups, refresh, siblings) {
         item.variant_size ? el('span', { class: 'variant', text: item.variant_size }) : null,
       ]),
       el('div', { class: 'stock-meta' }, [
-        status.grouped
-          ? el('span', {
-              class: 'pill pill-group',
-              text: `Group: ${status.group.name}`,
-              title: `Pooled with ${status.group.items.length} item(s). `
-                + `Group holds ${fmtNumber(status.stock)}, wants ${fmtNumber(status.threshold)}.`,
-            })
-          : null,
         parseBool(item.is_refill) ? el('span', { class: 'pill pill-refill', text: 'Refill' }) : null,
         parseBool(item.no_restock) ? el('span', { class: 'pill pill-winding', text: 'Using up' }) : null,
         item.expiration_date
           ? el('span', { class: 'pill', text: `Exp ${fmtDate(item.expiration_date)}` })
           : null,
-        isGroupLead
+        // Only for items judged on their own. A pooled item's requirement is
+        // stated once on the category heading instead of repeated on each row.
+        !status.grouped && status.threshold > 0
           ? el('span', {
               class: `pill ${status.level === 'ok' ? 'pill-ok' : 'pill-low'}`,
-              text: `${fmtNumber(status.stock)} of ${fmtNumber(status.threshold)} in group`,
+              text: `keep ${fmtNumber(status.threshold)}`,
             })
           : null,
       ]),
@@ -211,8 +257,9 @@ function itemRow(item, groups, refresh, siblings) {
         class: `qty qty-${status.level}`,
         text: `${fmtNumber(parseNum(item.current_stock))}${unit ? ` ${unit}` : ''}`,
         title: status.grouped
-          ? 'This row\'s own count. Low-stock is judged on the group total.'
-          : `Keep at least ${fmtNumber(status.threshold)}`,
+          ? `This row's own count. ${status.group.name} needs `
+            + `${fmtNumber(status.threshold)} in total and has ${fmtNumber(status.stock)}.`
+          : (status.threshold > 0 ? `Keep at least ${fmtNumber(status.threshold)}` : ''),
       }),
       el('button', {
         class: 'btn btn-ghost btn-sm step',
@@ -287,7 +334,7 @@ async function adjust(event, item, delta, refresh) {
 }
 
 function blob(item) {
-  return [item.item_name, item.brand, item.variant_size, item.category, item.stock_group]
+  return [item.item_name, item.brand, item.variant_size, item.category]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();

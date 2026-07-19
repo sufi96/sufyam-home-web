@@ -60,6 +60,12 @@ export const TABS = [
       // Appended after the audit block, which is unusual but required: the
       // columns above already exist in the live sheet in this order, and rows
       // are written positionally. Anything new can only go on the end.
+      //
+      // stock_group is retired. Pooling now hangs off the category tree — a
+      // subcategory *is* the group — so nothing reads or writes it. The column
+      // stays because removing it would shift is_refill and no_restock one
+      // place left of where they sit in the live sheet, silently re-mapping
+      // both. Reuse it only for something the same shape.
       'brand', 'stock_group', 'is_refill', 'no_restock',
     ],
     title: (r) => r.item_name,
@@ -70,22 +76,20 @@ export const TABS = [
       { key: 'category', label: 'Category', type: 'taxonomy', kind: 'inventoryCategory' },
       { key: 'current_stock', label: 'Current stock', type: 'number', default: 0 },
       { key: 'unit', label: 'Unit', type: 'select', options: ['pcs', 'kg', 'g', 'l', 'ml', 'pack', 'can'], default: 'pcs' },
-      { key: 'min_threshold', label: 'Keep at least', type: 'number', default: 0 },
       {
-        key: 'stock_group',
-        label: 'Stock group',
-        type: 'suggest',
-        suggest: 'stock_group',
-        hint: 'Items sharing a group pool their stock, so "keep at least 2 toothbrushes" '
-          + 'is satisfied by any 2 — whatever the brand or variant.',
-        placeholder: 'Toothbrush, Razor…',
+        key: 'min_threshold',
+        label: 'Keep at least',
+        type: 'number',
+        default: 0,
+        hint: 'For this item on its own. If its category sets a number instead, '
+          + 'the whole category is counted together and this is ignored.',
       },
       { key: 'is_refill', label: 'Refill / refillable', type: 'bool' },
       {
         key: 'no_restock',
         label: 'Use up, do not restock',
         type: 'bool',
-        hint: 'Keeps it in the list but out of low-stock warnings.',
+        hint: 'Stays in the list, but never counted as running low.',
       },
       { key: 'expiration_date', label: 'Expires', type: 'date' },
     ],
@@ -178,16 +182,26 @@ export const TABS = [
     box: 'taxonomy',
     tab: 'Taxonomy',
     label: 'Taxonomy',
-    columns: ['id', 'kind', 'name', 'icon_key', 'color_hex', 'sort_order', ...AUDIT],
+    columns: [
+      'id', 'kind', 'name', 'icon_key', 'color_hex', 'sort_order', ...AUDIT,
+      // Appended on the end for the same positional reason as Inventory's.
+      // parent_id turns inventory categories into a two-level tree
+      // ("Cleaning" > "Sponge"); min_threshold lets a category carry the
+      // stock rule for everything under it, so "keep at least 2 toothbrushes"
+      // is answered by the category rather than by any one brand's row.
+      'parent_id', 'min_threshold',
+    ],
     title: (r) => r.name,
     fields: [
-      { key: 'kind', label: 'Kind', type: 'select', options: ['inventoryCategory', 'recordType', 'label'], default: 'label' },
+      { key: 'kind', label: 'Kind', type: 'select', options: ['inventoryCategory', 'recordType', 'label', 'noteCategory'], default: 'label' },
       { key: 'name', label: 'Name', type: 'text', required: true },
+      { key: 'parent_id', label: 'Parent', type: 'ref', ref: 'Taxonomy', allowEmpty: true },
       { key: 'icon_key', label: 'Icon key', type: 'text' },
       { key: 'color_hex', label: 'Colour hex', type: 'text' },
+      { key: 'min_threshold', label: 'Keep at least', type: 'number', default: 0 },
       { key: 'sort_order', label: 'Sort order', type: 'number', default: 0 },
     ],
-    listColumns: ['kind', 'name', 'sort_order'],
+    listColumns: ['kind', 'name', 'parent_id', 'min_threshold', 'sort_order'],
   },
 ];
 

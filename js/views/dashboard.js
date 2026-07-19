@@ -12,6 +12,7 @@
 import * as repo from '../repo.js';
 import { parseNum } from '../schema.js';
 import { shortages } from '../stock.js';
+import * as taxonomy from '../taxonomy.js';
 import { iconEl } from '../icons.js';
 import { el, clear, fmtMoney, fmtDate, daysUntil, emptyState } from '../ui.js';
 
@@ -41,9 +42,13 @@ export function renderDashboard(container) {
     const earned = sum(inPeriod.filter(isIncome));
     const delta = prevSpent ? ((spent - prevSpent) / prevSpent) * 100 : null;
 
-    // One entry per thing to buy, not per row: grouped variants collapse to a
-    // single line, and items marked "use up" are left out. See stock.js.
-    const lowStock = shortages(repo.rows('Inventory'));
+    // One entry per thing to buy, not per row: a category that pools its stock
+    // collapses to a single line, and items marked "use up" are left out.
+    // See stock.js.
+    const lowStock = shortages(
+      repo.rows('Inventory'),
+      taxonomy.list(taxonomy.KIND_INVENTORY_CATEGORY),
+    );
     const dueSoon = repo.rows('Records_Reminders')
       .map((r) => ({ ...r, days: daysUntil(r.due_date) }))
       .filter((r) => r.days !== null && r.days <= 30)

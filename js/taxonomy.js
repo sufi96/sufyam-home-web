@@ -28,6 +28,72 @@ export function names(kind) {
   return list(kind).map((t) => t.name).filter(Boolean);
 }
 
+// ---------- hierarchy ----------
+//
+// Inventory categories are two levels: "Cleaning" > "Sponge". Only inventory
+// uses this; labels and record types stay flat, and a parent_id on those is
+// simply ignored.
+//
+// Depth is capped at 2 deliberately. Expense categories go three deep and the
+// drag-to-nest UI they need is the most complicated screen in this app; stock
+// doesn't earn that, and a flat-ish tree keeps the picker readable.
+export const MAX_DEPTH = 2;
+
+/** Top-level entries — those with no parent, or a parent that's gone. */
+export function roots(kind) {
+  const ids = new Set(list(kind).map((t) => t.id));
+  return list(kind).filter((t) => !t.parent_id || !ids.has(t.parent_id));
+}
+
+export function childrenOf(kind, parentId) {
+  if (!parentId) return [];
+  return list(kind).filter((t) => t.parent_id === parentId);
+}
+
+/** [{ entry, children: [entry] }], parents in bank order. */
+export function tree(kind) {
+  return roots(kind).map((entry) => ({ entry, children: childrenOf(kind, entry.id) }));
+}
+
+/** Flat list with a depth on each, for indenting a <select> or a list. */
+export function flatten(kind) {
+  const out = [];
+  for (const { entry, children } of tree(kind)) {
+    out.push({ entry, depth: 0 });
+    for (const child of children) out.push({ entry: child, depth: 1 });
+  }
+  return out;
+}
+
+export function byId(kind, id) {
+  return list(kind).find((t) => t.id === id) || null;
+}
+
+/**
+ * Entries are referenced from item rows by *name*, not id — that's how the
+ * column has always been stored and how the phone reads it. Names are unique
+ * within a kind (create() and rename() both refuse duplicates), so this is
+ * unambiguous.
+ */
+export function byName(kind, name) {
+  const key = String(name || '').trim().toLowerCase();
+  if (!key) return null;
+  return list(kind).find((t) => t.name.trim().toLowerCase() === key) || null;
+}
+
+/** An entry and everything beneath it, itself first. */
+export function withDescendants(kind, entry) {
+  if (!entry) return [];
+  return [entry, ...childrenOf(kind, entry.id)];
+}
+
+/** ['Cleaning', 'Sponge'] for a subcategory; ['Cleaning'] for a parent. */
+export function pathOf(kind, entry) {
+  if (!entry) return [];
+  const parent = entry.parent_id ? byId(kind, entry.parent_id) : null;
+  return parent ? [parent.name, entry.name] : [entry.name];
+}
+
 function existingNameSet(kind) {
   return new Set(names(kind).map((n) => n.toLowerCase()));
 }
@@ -102,20 +168,63 @@ export function labelUsage() {
 // ---------- CRUD, for the kinds the web console manages directly ----------
 
 /** Adds one entry and returns it. */
-export async function create(kind, { name, icon_key = '', color_hex = '' }) {
+export async function create(kind, {
+  name, icon_key = '', color_hex = '', parent_id = '', min_threshold = 0,
+}) {
   const clean = String(name || '').trim();
   if (!clean) throw new Error('Name is required');
+  // Unique across the whole kind, not just among siblings: item rows reference
+  // categories by name, so two "Sponge"s under different parents would be
+  // indistinguishable once written to an item.
   if (names(kind).some((n) => n.toLowerCase() === clean.toLowerCase())) {
     throw new Error(`"${clean}" already exists`);
   }
+  if (parent_id && byId(kind, parent_id)?.parent_id) {
+    throw new Error('Categories only go two levels deep');
+  }
   const order = list(kind).reduce((max, t) => Math.max(max, parseNum(t.sort_order)), 0) + 1;
-  return repo.save('Taxonomy', { kind, name: clean, icon_key, color_hex, sort_order: order });
+  return repo.save('Taxonomy', {
+    kind, name: clean, icon_key, color_hex, parent_id, min_threshold, sort_order: order,
+  });
 }
 
 export async function rename(entry, name) {
   const clean = String(name || '').trim();
   if (!clean) throw new Error('Name is required');
+  if (clean.toLowerCase() !== entry.name.trim().toLowerCase()
+    && names(entry.kind).some((n) => n.toLowerCase() === clean.toLowerCase())) {
+    throw new Error(`"${clean}" already exists`);
+  }
   return repo.save('Taxonomy', { ...entry, name: clean });
+}
+
+/**
+ * Saves an inventory category and re-points every item that referenced it.
+ *
+ * Items store the category *name*, not its id, so a bare rename would orphan
+ * all of them at once — they'd keep pointing at a name that no longer exists
+ * and quietly fall out of their category. One save for the category, one batch
+ * for the items.
+ *
+ * Returns how many items were re-filed.
+ */
+export async function updateCategory(entry, patch) {
+  const before = String(entry.name || '').trim();
+  const after = patch.name === undefined ? before : String(patch.name).trim();
+  if (!after) throw new Error('Name is required');
+  if (after.toLowerCase() !== before.toLowerCase()
+    && names(entry.kind).some((n) => n.toLowerCase() === after.toLowerCase())) {
+    throw new Error(`"${after}" already exists`);
+  }
+
+  await repo.save('Taxonomy', { ...entry, ...patch, name: after });
+  if (after === before) return 0;
+
+  const affected = repo.rows('Inventory')
+    .filter((i) => String(i.category || '').trim() === before)
+    .map((i) => ({ ...i, category: after }));
+  if (affected.length) await repo.saveMany('Inventory', affected);
+  return affected.length;
 }
 
 export async function update(entry, patch) {

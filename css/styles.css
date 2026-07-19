@@ -2315,3 +2315,131 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
   .stock-main { flex: 1 0 100%; }
   .stock-actions { margin-left: auto; }
 }
+
+/* ---------- toggle switch (bool fields) ---------- */
+
+/* A row you click anywhere on, rather than a 16px tickbox with a label beside
+   it. These read as settings, and they were the ugliest thing in the form. */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 11px 13px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: border-color .15s, background .15s;
+}
+.toggle-row:hover { border-color: var(--text-dim); }
+.toggle-row.is-on { border-color: var(--accent); background: var(--accent-soft); }
+
+.toggle-text { flex: 1; min-width: 0; }
+.toggle-label { display: block; font-size: 13.5px; font-weight: 600; }
+.toggle-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+.toggle-row.is-on .toggle-hint { color: var(--text-dim); }
+
+.switch {
+  flex: 0 0 auto;
+  position: relative;
+  width: 40px;
+  height: 23px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  transition: background .15s, border-color .15s;
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform .15s, background .15s;
+}
+.toggle-row.is-on .switch { background: var(--accent); border-color: var(--accent); }
+.toggle-row.is-on .switch::after { transform: translateX(17px); background: #fff; }
+
+/* The bool field supplies its own label and hint inside the switch row, so the
+   generic ones the form wraps every field in would just repeat them. */
+.field:has(> .toggle-row) > label,
+.field:has(> .toggle-row) > .hint { display: none; }
+
+/* ---------- category picker + manager ---------- */
+
+.taxonomy-select .hint { margin-top: 5px; }
+
+.cat-manager {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.cat-manager > .hint { padding: 16px; margin: 0; }
+
+.cat-manager-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.cat-manager-row:last-child { border-bottom: 0; }
+.cat-manager-row.depth-1 { padding-left: 34px; background: var(--surface-2); }
+
+.cat-manager-main { flex: 1; min-width: 0; }
+.cat-manager-name { font-size: 13.5px; font-weight: 600; }
+.cat-manager-sub {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.cat-icon { font-size: 20px; flex: 0 0 auto; color: var(--text-dim); }
+
+.cat-add-sub {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding-left: 34px;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-dim);
+}
+.cat-add-top { width: 100%; }
+
+/* Subcategory headings sit inside the parent's card, indented and quieter than
+   the parent's own heading. */
+.stock-group-head.depth-1 {
+  padding-left: 30px;
+  background: transparent;
+  border-top: 1px solid var(--border);
+}
+.stock-group-head.depth-1 h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.stock-group-head.depth-1 .cat-icon { font-size: 17px; }
+
+.stock-empty-sub {
+  padding: 9px 14px 11px 30px;
+  font-size: 12px;
+  color: var(--text-dim);
+}

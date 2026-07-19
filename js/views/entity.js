@@ -246,27 +246,27 @@ function buildInput(field, values) {
   const set = (v) => { values[field.key] = v; };
 
   switch (field.type) {
+    // A switch, not a bare checkbox: these read as settings ("use up, don't
+    // restock") rather than as a form field with a tickbox beside it, and a
+    // 16px checkbox next to a label was the ugliest thing on the page.
     case 'bool':
-      return el('label', { class: 'check-row' }, [
-        el('input', {
-          type: 'checkbox',
-          checked: parseBool(values[field.key]),
-          onchange: (e) => set(e.target.checked),
-        }),
-        el('span', { text: field.checkboxText || 'Yes' }),
-      ]);
+      return toggle(field, parseBool(values[field.key]), set);
 
-    // A category, brand or group is usually one you've used before, but the
-    // first one never is — a plain select would make the common case easy and
-    // the first case impossible. A datalist offers the existing values without
-    // refusing a new one.
+    // A real dropdown of the category tree, with subcategories indented under
+    // their parent. Typing a free-text category was how you'd end up with
+    // "Toiletries" and "toiletry" as two separate things.
     case 'taxonomy':
+      return taxonomySelect(field, values, set);
+
+    // A brand is usually one you've used before, but the first one never is —
+    // a plain select would make the common case easy and the first case
+    // impossible. A datalist offers what exists without refusing anything new.
     case 'suggest': {
       const listId = `dl-${field.key}-${Math.random().toString(36).slice(2, 8)}`;
-      const options = field.type === 'taxonomy'
-        ? taxonomy.names(field.kind)
-        : suggestionsFor(repo.rows(field.suggestFrom || 'Inventory'), field.suggest || field.key);
-
+      const options = suggestionsFor(
+        repo.rows(field.suggestFrom || 'Inventory'),
+        field.suggest || field.key,
+      );
       return el('div', {}, [
         el('input', {
           class: 'input',
@@ -351,6 +351,133 @@ function buildInput(field, values) {
         oninput: (e) => set(e.target.value),
       });
   }
+}
+
+/** An on/off switch with the field's own label as its text. */
+function toggle(field, initial, set) {
+  const knob = el('span', { class: 'switch' });
+  const row = el('button', {
+    type: 'button',
+    class: `toggle-row${initial ? ' is-on' : ''}`,
+    'aria-pressed': String(initial),
+    onclick: (e) => {
+      e.preventDefault();
+      const next = row.classList.toggle('is-on');
+      row.setAttribute('aria-pressed', String(next));
+      set(next);
+    },
+  }, [
+    el('span', { class: 'toggle-text' }, [
+      el('span', { class: 'toggle-label', text: field.label }),
+      field.hint ? el('span', { class: 'toggle-hint', text: field.hint }) : null,
+    ]),
+    knob,
+  ]);
+  return row;
+}
+
+/**
+ * Category dropdown, tree-shaped, with an inline "new category" escape hatch.
+ *
+ * Parents are selectable as well as their children — plenty of things ("Rice")
+ * don't need a subcategory, and forcing one would mean inventing filler like
+ * "Rice > Rice".
+ */
+function taxonomySelect(field, values, set) {
+  const wrap = el('div', { class: 'taxonomy-select' });
+
+  const render = () => {
+    clear(wrap);
+    const current = String(values[field.key] ?? '');
+    const entries = taxonomy.flatten(field.kind);
+
+    const select = el('select', {
+      class: 'select',
+      onchange: (e) => {
+        if (e.target.value === '__new__') {
+          e.target.value = current; // don't leave the sentinel selected
+          promptNewCategory(field, (name) => { set(name); render(); });
+          return;
+        }
+        set(e.target.value);
+      },
+    }, [
+      el('option', { value: '', text: '— none —', selected: !current }),
+      ...entries.map(({ entry, depth }) => el('option', {
+        value: entry.name,
+        // NBSP: a leading normal space is stripped in a <select> on some
+        // browsers, which would flatten the indent that shows the nesting.
+        text: `${depth ? '    ' : ''}${entry.name}`,
+        selected: entry.name === current,
+      })),
+      el('option', { value: '__new__', text: '+ New category…' }),
+    ]);
+
+    // A category typed on an older build, or renamed since, won't be in the
+    // list — silently showing "none" would lose it on the next save.
+    const orphan = current && !entries.some(({ entry }) => entry.name === current);
+    if (orphan) {
+      select.append(el('option', { value: current, text: `${current} (not in the list)`, selected: true }));
+    }
+
+    wrap.append(select);
+    if (orphan) {
+      wrap.append(el('div', {
+        class: 'hint',
+        text: `"${current}" isn't one of your categories. Pick another, or add it in Manage categories.`,
+      }));
+    }
+  };
+
+  render();
+  return wrap;
+}
+
+function promptNewCategory(field, onCreated) {
+  let name = '';
+  let parentId = '';
+
+  openModal({
+    title: 'New category',
+    render: (body) => {
+      body.append(el('div', { class: 'field' }, [
+        el('label', { text: 'Name *' }),
+        el('input', {
+          class: 'input',
+          type: 'text',
+          placeholder: 'Sponge, Detergent…',
+          oninput: (e) => { name = e.target.value; },
+        }),
+      ]));
+      body.append(el('div', { class: 'field' }, [
+        el('label', { text: 'Inside' }),
+        el('select', {
+          class: 'select',
+          onchange: (e) => { parentId = e.target.value; },
+        }, [
+          el('option', { value: '', text: '— top level —' }),
+          // Only parents: the tree is two deep, so a subcategory can't take
+          // children of its own.
+          ...taxonomy.roots(field.kind).map((t) => el('option', { value: t.id, text: t.name })),
+        ]),
+      ]));
+    },
+    actions: (close) => {
+      const btn = el('button', { class: 'btn', text: 'Add' });
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          const created = await taxonomy.create(field.kind, { name, parent_id: parentId });
+          onCreated(created.name);
+          close();
+        } catch (e) {
+          btn.disabled = false;
+          toast(e.message, { error: true });
+        }
+      });
+      return [el('button', { class: 'btn btn-ghost', text: 'Cancel', onclick: close }), btn];
+    },
+  });
 }
 
 /**
