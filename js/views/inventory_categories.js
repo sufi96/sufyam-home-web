@@ -1,25 +1,29 @@
 // The inventory category tree: "Cleaning" > "Sponge", "Detergent".
 //
-// Deliberately the same screen as expense categories, down to the drag and the
-// colour-filled top-level rows — the shared parts live in cattree.js. Two
-// category editors that behaved differently would be two things to learn, and
-// this is the one you sit in front of while sorting out a shelf.
+// Deliberately the same screen as expense categories — tree on the left, the
+// selected row's details on the right, shared drag and colouring from
+// cattree.js. Two category editors that behaved differently would be two
+// things to learn, and this is the one you sit in front of while sorting out
+// a shelf.
 //
 // What it adds over the expense tree is the "keep at least" number. Putting
 // that on a category is what makes "two toothbrushes, whichever brand" work:
 // everything inside is counted as one pool, so the requirement belongs to the
 // category rather than to any one brand's row. See stock.js.
 //
-// Structural edits are BUFFERED, same as expenses: dragging and renaming
-// mutate a working copy and nothing is written until Save, so a session of
-// twenty drags costs one batch instead of twenty.
+// EVERYTHING is buffered — structure, names, icons, colours, thresholds. The
+// right-hand pane edits a working copy and repaints the tree live, so you can
+// recolour six categories and see the result before a single request goes out;
+// Save then writes the lot in one batch. That's one API call for a session of
+// edits instead of one per keystroke-ish change, which is what kept tripping
+// Google's per-minute write quota.
 
 import * as repo from '../repo.js';
 import * as taxonomy from '../taxonomy.js';
 import { parseNum } from '../schema.js';
 import { iconPicker, colourPicker } from './pickers.js';
 import {
-  INDENT_PX, attachTreeDrag, deriveTree, categoryBadge, rowTint, normaliseHex,
+  INDENT_PX, attachTreeDrag, deriveTree, categoryBadge, rowTint,
 } from './cattree.js';
 import { buildGroups } from '../stock.js';
 import {
@@ -31,15 +35,38 @@ const MAX_DEPTH = 1; // parent > sub. Stock doesn't need a third level.
 const DEPTH_NAMES = ['category', 'subcategory'];
 const PENDING_KEY = 'sufyam.invcat.pending';
 
-export function renderInventoryCategories(container, { onBack } = {}) {
+const EDITABLE = ['name', 'icon_key', 'color_hex', 'min_threshold'];
+
+export function renderInventoryCategories(container) {
   let query = '';
   let saving = false;
-  let working = [];        // [{ id, depth }]
-  let renames = new Map(); // id -> new name
+  let selectedId = null;
+
+  let working = [];      // [{ id, depth }] — the arrangement
+  let edits = new Map(); // id -> partial row, the field edits
 
   const treePane = el('div', { class: 'pane' });
+  const detailPane = el('div', { class: 'pane' });
 
   // ---------- model ----------
+
+  /** The row as the user currently has it: what's stored, plus buffered edits. */
+  function effective(id) {
+    const stored = repo.byId('Taxonomy', id);
+    if (!stored) return null;
+    return { ...stored, ...(edits.get(id) || {}) };
+  }
+
+  /**
+   * Every category as the user currently has it.
+   *
+   * Pooling has to be computed from these rather than from what's stored, or a
+   * threshold you just typed wouldn't count until you saved — the row would
+   * claim "0 of 2" while showing two items sitting right there.
+   */
+  function effectiveCategories() {
+    return taxonomy.list(KIND).map((c) => effective(c.id)).filter(Boolean);
+  }
 
   function buildTree() {
     const all = taxonomy.list(KIND);
@@ -65,7 +92,7 @@ export function renderInventoryCategories(container, { onBack } = {}) {
 
   function syncWorking() {
     working = buildTree().map(({ cat, depth }) => ({ id: cat.id, depth }));
-    renames = new Map();
+    edits = new Map();
   }
 
   const derive = () => deriveTree(working, MAX_DEPTH);
@@ -75,13 +102,16 @@ export function renderInventoryCategories(container, { onBack } = {}) {
     const derived = derive();
     const out = [];
     for (const [id, want] of derived) {
-      const cat = repo.byId('Taxonomy', id);
-      if (!cat) continue;
-      const name = renames.get(id) ?? cat.name;
-      if ((cat.parent_id || '') !== want.parent_id
-        || parseNum(cat.sort_order) !== want.sort_order
-        || name !== cat.name) {
-        out.push({ ...cat, name, parent_id: want.parent_id, sort_order: want.sort_order });
+      const stored = repo.byId('Taxonomy', id);
+      if (!stored) continue;
+      const now = effective(id);
+
+      const structural = (stored.parent_id || '') !== want.parent_id
+        || parseNum(stored.sort_order) !== want.sort_order;
+      const fieldChanged = EDITABLE.some((k) => String(now[k] ?? '') !== String(stored[k] ?? ''));
+
+      if (structural || fieldChanged) {
+        out.push({ ...now, parent_id: want.parent_id, sort_order: want.sort_order });
       }
     }
     return out;
@@ -89,17 +119,17 @@ export function renderInventoryCategories(container, { onBack } = {}) {
 
   const isDirty = () => dirtyRows().length > 0;
 
-  // Unsaved arrangement survives a reload, the same as the expense tree.
-  // Restored only when every row in the buffer still exists — a row vanishing
-  // means the arrangement no longer describes reality, and writing it would
-  // put a guess over whatever the sheet now holds.
+  // Unsaved work survives a reload. Restored only when every row in the buffer
+  // still exists — a row vanishing (deleted on the phone, say) means the
+  // arrangement no longer describes reality, and writing it would put a guess
+  // over whatever the sheet now holds.
   function persistWorking() {
     if (!isDirty()) {
       localStorage.removeItem(PENDING_KEY);
       return;
     }
     try {
-      localStorage.setItem(PENDING_KEY, JSON.stringify({ working, renames: [...renames] }));
+      localStorage.setItem(PENDING_KEY, JSON.stringify({ working, edits: [...edits] }));
     } catch { /* storage unavailable; the in-memory buffer still works */ }
   }
 
@@ -118,26 +148,27 @@ export function renderInventoryCategories(container, { onBack } = {}) {
       return false;
     }
     working = kept;
-    renames = new Map((stored.renames || []).filter(([id]) => liveIds.has(id)));
+    edits = new Map((stored.edits || []).filter(([id]) => liveIds.has(id)));
     return isDirty();
   }
 
   // ---------- painting ----------
 
-  function paint() {
+  function paintAll() {
     clear(container);
-    container.append(toolbar(), treePane);
+    container.append(toolbar(), el('div', { class: 'cat-split' }, [treePane, detailPane]));
     paintTree();
+    paintDetail();
+  }
+
+  function refreshToolbar() {
+    const old = container.querySelector('.toolbar');
+    if (old) old.replaceWith(toolbar());
   }
 
   function toolbar() {
     const dirty = dirtyRows();
     return el('div', { class: 'toolbar' }, [
-      onBack ? el('button', {
-        class: 'btn btn-ghost',
-        text: '← Back to stock',
-        onclick: () => withUnsavedCheck(onBack),
-      }) : null,
       el('input', {
         class: 'input search',
         type: 'search',
@@ -153,7 +184,17 @@ export function renderInventoryCategories(container, { onBack } = {}) {
         class: 'btn btn-ghost',
         text: 'Discard',
         disabled: !dirty.length || saving,
-        onclick: () => { syncWorking(); persistWorking(); paint(); },
+        onclick: async () => {
+          const ok = await confirmDialog({
+            title: 'Discard changes?',
+            message: `${dirty.length} categor${dirty.length === 1 ? 'y' : 'ies'} will go back to `
+              + 'what the sheet holds. This cannot be undone.',
+          });
+          if (!ok) return;
+          syncWorking();
+          persistWorking();
+          paintAll();
+        },
       }),
       el('button', {
         class: 'btn',
@@ -163,8 +204,8 @@ export function renderInventoryCategories(container, { onBack } = {}) {
       }),
       el('button', {
         class: 'btn',
-        text: '+ New category',
-        onclick: () => withFlush(() => openEditor({ parentId: '' })),
+        text: '+ New',
+        onclick: () => withFlush(openCreate),
       }),
     ]);
   }
@@ -177,7 +218,7 @@ export function renderInventoryCategories(container, { onBack } = {}) {
     const flat = working.map(({ id, depth }) => ({ id, depth: derived.get(id)?.depth ?? depth }));
     const filtering = Boolean(query);
     const visible = filtering
-      ? flat.filter(({ id }) => nameOf(id).toLowerCase().includes(query))
+      ? flat.filter(({ id }) => (effective(id)?.name || '').toLowerCase().includes(query))
       : flat;
 
     if (!visible.length) {
@@ -186,16 +227,12 @@ export function renderInventoryCategories(container, { onBack } = {}) {
         flat.length
           ? 'No categories match that.'
           : 'No categories yet. Add "Cleaning", then drag "Sponge" under it.',
-        flat.length ? null : el('button', {
-          class: 'btn',
-          text: '+ New category',
-          onclick: () => openEditor({ parentId: '' }),
-        }),
+        flat.length ? null : el('button', { class: 'btn', text: '+ New category', onclick: openCreate }),
       ));
       return;
     }
 
-    const groups = buildGroups(repo.rows('Inventory'), taxonomy.list(KIND));
+    const groups = buildGroups(repo.rows('Inventory'), effectiveCategories());
     const list = el('div', { class: 'cat-list' });
     for (const entry of visible) {
       const row = buildRow(entry, groups, { draggable: !filtering });
@@ -212,47 +249,41 @@ export function renderInventoryCategories(container, { onBack } = {}) {
         isBusy: () => saving,
         getWorking: () => working,
         setWorking: (next) => { working = next; },
-        nameOf,
-        onDrop: () => { paintTree(); refreshToolbar(); },
+        nameOf: (id) => effective(id)?.name || '',
+        onDrop: () => { paintTree(); paintDetail(); refreshToolbar(); },
       });
     }
   }
 
-  function refreshToolbar() {
-    const old = container.querySelector('.toolbar');
-    if (old) old.replaceWith(toolbar());
-  }
-
   function buildRow({ id, depth }, groups, { draggable }) {
-    const cat = repo.byId('Taxonomy', id);
+    const cat = effective(id);
     if (!cat) return null;
 
-    const name = renames.get(id) ?? cat.name ?? '';
     const items = itemsIn(cat);
     const threshold = parseNum(cat.min_threshold);
-    const pool = groups.get(cat.id);
-
-    const nameNode = el('span', { class: 'cat-name', text: name || '(unnamed)' });
-    nameNode.addEventListener('dblclick', (e) => {
-      e.stopPropagation();
-      startInlineRename(nameNode, name, (value) => {
-        renames.set(id, value);
-        paintTree();
-        refreshToolbar();
-      });
-    });
+    const pool = groups.get(id);
 
     return el('div', {
-      class: `cat-row depth-${depth}`,
+      class: `cat-row depth-${depth}${id === selectedId ? ' is-selected' : ''}`,
       'data-id': id,
       'data-depth': String(depth),
       style: `--indent:${depth * INDENT_PX}px;${rowTint(cat.color_hex, depth)}`,
+      onclick: (e) => {
+        if (e.target.closest('input, button')) return;
+        selectedId = id;
+        // Only re-style the existing rows; repainting the tree here would
+        // rebuild the node mid-click.
+        for (const other of treePane.querySelectorAll('.cat-row')) {
+          other.classList.toggle('is-selected', other.dataset.id === id);
+        }
+        paintDetail();
+      },
     }, [
       draggable
         ? el('span', { class: 'drag-handle', text: '⠿', title: 'Drag to reorder or nest' })
         : el('span', { style: 'width:10px' }),
       categoryBadge(cat, depth === 0 ? 26 : 22, { onColour: depth === 0 }),
-      nameNode,
+      el('span', { class: 'cat-name', text: cat.name || '(unnamed)' }),
       items.length
         ? el('span', {
             class: 'chip',
@@ -269,19 +300,123 @@ export function renderInventoryCategories(container, { onBack } = {}) {
             text: `${fmtNumber(pool ? pool.stock : 0)} of ${fmtNumber(threshold)}`,
           })
         : null,
-      el('span', { style: 'flex:1' }),
-      el('button', {
-        class: 'btn btn-ghost btn-sm cat-action',
-        text: 'Edit',
-        onclick: (e) => { e.stopPropagation(); withFlush(() => openEditor({ entry: cat })); },
-      }),
-      el('button', {
-        class: 'btn btn-danger btn-sm cat-action',
-        text: '🗑',
-        title: 'Delete',
-        onclick: (e) => { e.stopPropagation(); withFlush(() => remove(cat)); },
-      }),
     ]);
+  }
+
+  // ---------- right pane ----------
+
+  function paintDetail() {
+    clear(detailPane);
+
+    if (!selectedId || !repo.byId('Taxonomy', selectedId)) {
+      selectedId = null;
+      detailPane.append(el('div', { class: 'card detail-empty' }, [
+        emptyState('👈', 'Select a category to edit it.'),
+      ]));
+      return;
+    }
+
+    const cat = effective(selectedId);
+    const id = selectedId;
+    const stored = repo.byId('Taxonomy', id);
+    const items = itemsIn(cat);
+    const parent = cat.parent_id ? effective(cat.parent_id) : null;
+
+    // Every control writes to the buffer and repaints the row in place, so the
+    // colour or icon you just chose is visible in the tree immediately without
+    // anything being written to the sheet.
+    const set = (key, value) => {
+      const next = { ...(edits.get(id) || {}) };
+      if (String(value ?? '') === String(stored[key] ?? '')) delete next[key];
+      else next[key] = value;
+
+      if (Object.keys(next).length) edits.set(id, next);
+      else edits.delete(id);
+
+      paintTree();
+      refreshToolbar();
+      persistWorking();
+    };
+
+    const groups = buildGroups(repo.rows('Inventory'), effectiveCategories());
+    const pool = groups.get(id);
+    const threshold = parseNum(cat.min_threshold);
+
+    detailPane.append(el('div', { class: 'card' }, [
+      el('div', { class: 'detail-head' }, [
+        categoryBadge(cat, 36),
+        el('div', { style: 'min-width:0' }, [
+          el('div', { class: 'detail-title', text: cat.name || '(unnamed)' }),
+          el('div', {
+            class: 'detail-crumb',
+            text: parent ? `Inside ${parent.name}` : 'Top-level category',
+          }),
+        ]),
+      ]),
+
+      el('div', { class: 'cat-detail-body' }, [
+        field('Name', el('input', {
+          class: 'input',
+          type: 'text',
+          value: cat.name || '',
+          oninput: (e) => set('name', e.target.value),
+        }), { required: true }),
+
+        field('Icon', iconPicker(cat.icon_key, (v) => set('icon_key', v))),
+        field('Colour', colourPicker(cat.color_hex, (v) => set('color_hex', v))),
+
+        field('Keep at least', el('input', {
+          class: 'input',
+          type: 'number',
+          min: '0',
+          value: String(parseNum(cat.min_threshold) || ''),
+          placeholder: '0',
+          oninput: (e) => set('min_threshold', parseNum(e.target.value)),
+        }), {
+          hint: 'Counts everything in this category together, whatever the brand. '
+            + 'Set 2 on "Toothbrush" and one spare of each of two brands is enough. '
+            + 'Leave at 0 to judge each item on its own.',
+        }),
+      ]),
+
+      threshold > 0
+        ? el('div', {
+            class: `detail-note ${pool && pool.stock < threshold ? 'is-low' : 'is-ok'}`,
+            text: `${fmtNumber(pool ? pool.stock : 0)} in stock across `
+              + `${pool ? pool.items.length : 0} item(s) — wants ${fmtNumber(threshold)}.`,
+          })
+        : null,
+
+      el('div', { class: 'detail-items' }, [
+        el('div', { class: 'pane-title', text: `${items.length} item(s)` }),
+        items.length
+          ? el('div', {}, items.slice(0, 12).map((i) => el('div', { class: 'mini-row' }, [
+              el('div', { style: 'flex:1;min-width:0' }, [
+                el('div', { class: 'mini-title', text: i.item_name || '(unnamed)' }),
+                el('div', {
+                  class: 'mini-sub',
+                  text: [i.brand, i.variant_size].filter(Boolean).join(' · '),
+                }),
+              ]),
+              el('span', {
+                class: 'chip',
+                text: `${fmtNumber(parseNum(i.current_stock))} ${i.unit || ''}`.trim(),
+              }),
+            ])))
+          : el('div', { class: 'hint', text: 'Nothing filed here yet.' }),
+        items.length > 12
+          ? el('div', { class: 'hint', text: `…and ${items.length - 12} more.` })
+          : null,
+      ]),
+
+      el('div', { class: 'detail-actions' }, [
+        el('button', {
+          class: 'btn btn-ghost btn-danger',
+          text: 'Delete category',
+          onclick: () => withFlush(() => remove(stored)),
+        }),
+      ]),
+    ]));
   }
 
   // ---------- saving ----------
@@ -299,6 +434,22 @@ export function renderInventoryCategories(container, { onBack } = {}) {
       })
       .filter(Boolean);
 
+    // Two categories ending up with the same name would make item rows
+    // ambiguous, since that's the only thing they reference.
+    const seen = new Set();
+    for (const row of rows) {
+      const key = String(row.name || '').trim().toLowerCase();
+      if (!key) return toast('A category needs a name', { error: true });
+      if (seen.has(key)) return toast(`Two categories are both called "${row.name}"`, { error: true });
+      seen.add(key);
+    }
+    for (const other of taxonomy.list(KIND)) {
+      if (rows.some((r) => r.id === other.id)) continue;
+      if (seen.has(other.name.trim().toLowerCase())) {
+        return toast(`"${other.name}" already exists`, { error: true });
+      }
+    }
+
     saving = true;
     refreshToolbar();
     try {
@@ -312,12 +463,8 @@ export function renderInventoryCategories(container, { onBack } = {}) {
         if (affected.length) {
           await repo.saveMany('Inventory', affected);
           toast(`Saved — ${affected.length} item(s) re-filed`);
-        } else {
-          toast('Saved');
-        }
-      } else {
-        toast('Saved');
-      }
+        } else toast('Saved');
+      } else toast('Saved');
 
       syncWorking();
       localStorage.removeItem(PENDING_KEY);
@@ -325,101 +472,56 @@ export function renderInventoryCategories(container, { onBack } = {}) {
       toast(e.message, { error: true });
     } finally {
       saving = false;
-      paint();
+      paintAll();
     }
   }
 
-  /** Writes any pending arrangement before an action that reads live rows. */
+  /** Writes any pending work before an action that reads live rows. */
   async function withFlush(action) {
     if (isDirty()) await save();
     action();
   }
 
-  async function withUnsavedCheck(action) {
-    if (!isDirty()) return action();
-    const ok = await confirmDialog({
-      title: 'Leave without saving?',
-      message: 'Your rearrangement is kept on this device and will still be here '
-        + 'when you come back, but it hasn\'t been written to the sheet.',
-    });
-    if (ok) action();
-  }
+  // ---------- create / delete ----------
 
-  // ---------- editor ----------
-
-  function openEditor({ entry = null, parentId = '' }) {
-    const isEdit = Boolean(entry);
-    const values = {
-      name: entry?.name || '',
-      icon_key: entry?.icon_key || '',
-      color_hex: entry?.color_hex || '',
-      min_threshold: entry ? parseNum(entry.min_threshold) : 0,
-      parent_id: entry ? (entry.parent_id || '') : parentId,
-    };
-    const parent = values.parent_id ? taxonomy.byId(KIND, values.parent_id) : null;
+  function openCreate() {
+    let name = '';
+    let parentId = '';
 
     openModal({
-      title: isEdit
-        ? `Edit ${entry.name}`
-        : (parent ? `New category in ${parent.name}` : 'New category'),
+      title: 'New category',
       render: (body) => {
         body.append(field('Name', el('input', {
           class: 'input',
           type: 'text',
-          value: values.name,
-          placeholder: parent ? 'Sponge, Detergent…' : 'Cleaning, Toiletries…',
-          oninput: (e) => { values.name = e.target.value; },
+          placeholder: 'Cleaning, Toothbrush…',
+          oninput: (e) => { name = e.target.value; },
         }), { required: true }));
 
-        body.append(field('Icon', iconPicker(values.icon_key, (v) => { values.icon_key = v; })));
-        body.append(field('Colour', colourPicker(values.color_hex, (v) => { values.color_hex = v; })));
-
-        body.append(field('Keep at least', el('input', {
-          class: 'input',
-          type: 'number',
-          min: '0',
-          value: String(values.min_threshold || ''),
-          placeholder: '0',
-          oninput: (e) => { values.min_threshold = parseNum(e.target.value); },
-        }), {
-          hint: 'Counts everything in this category together, whatever the brand. '
-            + 'Set 2 on "Toothbrush" and one spare of each of two brands is enough. '
-            + 'Leave at 0 to judge each item on its own.',
-        }));
-
-        if (!isEdit) {
-          body.append(el('p', {
-            class: 'hint',
-            text: 'New categories start at the top level. Drag them onto a parent afterwards.',
-          }));
-        }
+        body.append(field('Inside', el('select', {
+          class: 'select',
+          onchange: (e) => { parentId = e.target.value; },
+        }, [
+          el('option', { value: '', text: '— top level —' }),
+          // Only parents: the tree is two deep, so a subcategory can't take
+          // children of its own.
+          ...taxonomy.roots(KIND).map((t) => el('option', { value: t.id, text: t.name })),
+        ]), { hint: 'You can drag it somewhere else afterwards.' }));
       },
       actions: (close) => {
-        const btn = el('button', { class: 'btn', text: isEdit ? 'Save' : 'Add' });
+        const btn = el('button', { class: 'btn', text: 'Add' });
         btn.addEventListener('click', async () => {
           btn.disabled = true;
           try {
-            if (isEdit) {
-              const moved = await taxonomy.updateCategory(entry, {
-                name: values.name,
-                icon_key: values.icon_key,
-                color_hex: values.color_hex,
-                min_threshold: values.min_threshold,
-              });
-              toast(moved ? `Saved — ${moved} item(s) re-filed` : 'Saved');
-            } else {
-              await taxonomy.create(KIND, {
-                name: values.name,
-                icon_key: values.icon_key,
-                color_hex: values.color_hex,
-                min_threshold: values.min_threshold,
-                parent_id: values.parent_id,
-              });
-              toast('Added');
-            }
+            // Written straight away rather than buffered: it needs a row in the
+            // sheet before there's an id to hang buffered edits on. Its icon,
+            // colour and threshold are then edited in the right-hand pane like
+            // anything else.
+            const created = await taxonomy.create(KIND, { name, parent_id: parentId });
             close();
             syncWorking();
-            paint();
+            selectedId = created.id;
+            paintAll();
           } catch (e) {
             btn.disabled = false;
             toast(e.message, { error: true });
@@ -452,8 +554,9 @@ export function renderInventoryCategories(container, { onBack } = {}) {
     try {
       await taxonomy.remove(entry);
       toast('Deleted');
+      if (selectedId === entry.id) selectedId = null;
       syncWorking();
-      paint();
+      paintAll();
     } catch (e) {
       toast(e.message, { error: true });
     }
@@ -461,22 +564,23 @@ export function renderInventoryCategories(container, { onBack } = {}) {
 
   // ---------- helpers ----------
 
-  function nameOf(id) {
-    return renames.get(id) ?? repo.byId('Taxonomy', id)?.name ?? '';
-  }
-
-  /** Items filed here or in any subcategory. */
+  /** Items filed here or in any subcategory, by the buffered names. */
   function itemsIn(entry) {
     const names = new Set(
-      taxonomy.withDescendants(KIND, entry).map((t) => t.name.trim().toLowerCase()),
+      taxonomy.withDescendants(KIND, entry)
+        .map((t) => (effective(t.id)?.name || t.name).trim().toLowerCase()),
     );
+    // The stored name counts too: until Save runs, items still carry it.
+    names.add(String(repo.byId('Taxonomy', entry.id)?.name || '').trim().toLowerCase());
+    names.delete('');
+
     return repo.rows('Inventory')
       .filter((i) => names.has(String(i.category || '').trim().toLowerCase()));
   }
 
   syncWorking();
   if (restoreWorking()) toast('Restored unsaved category changes');
-  paint();
+  paintAll();
 }
 
 function bySortOrder(a, b) {
@@ -490,33 +594,4 @@ function field(label, control, { required = false, hint = '' } = {}) {
     control,
     hint ? el('div', { class: 'hint', text: hint }) : null,
   ]);
-}
-
-/** Double-click a name to edit it in place; Enter commits, Escape cancels. */
-function startInlineRename(node, current, commit) {
-  const input = el('input', {
-    class: 'input',
-    type: 'text',
-    value: current,
-    style: 'max-width:220px;padding:4px 8px',
-  });
-  node.replaceWith(input);
-  input.focus();
-  input.select();
-  input.addEventListener('click', (e) => e.stopPropagation());
-
-  let done = false;
-  const finish = (save) => {
-    if (done) return;
-    done = true;
-    const value = input.value.trim();
-    if (save && value && value !== current) commit(value);
-    else input.replaceWith(node);
-  };
-
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
-  });
-  input.addEventListener('blur', () => finish(true));
 }

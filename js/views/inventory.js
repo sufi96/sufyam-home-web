@@ -15,7 +15,6 @@ import { buildGroups, stockStatus } from '../stock.js';
 import { glyphFor } from '../icons.js';
 import { normaliseHex } from './cattree.js';
 import { openForm } from './entity.js';
-import { renderInventoryCategories } from './inventory_categories.js';
 import { el, clear, toast, confirmDialog, emptyState, fmtDate, fmtNumber } from '../ui.js';
 
 const KIND = taxonomy.KIND_INVENTORY_CATEGORY;
@@ -60,15 +59,13 @@ export function renderInventory(container) {
       filterSelect,
       deletedToggle,
       el('div', { class: 'spacer' }),
+      // A shortcut to the Stock categories page, which is also in the nav —
+      // routed through the hash so it's one destination, not two copies of the
+      // same screen with their own unsaved buffers.
       el('button', {
         class: 'btn btn-ghost',
-        text: 'Manage categories',
-        // Takes over the page rather than opening a dialog: it's the same
-        // editor as expense categories, and dragging a tree inside a modal
-        // meant two scroll regions fighting each other.
-        onclick: () => renderInventoryCategories(container, {
-          onBack: () => { clear(container); renderInventory(container); },
-        }),
+        text: 'Categories',
+        onclick: () => { location.hash = 'InventoryCategories'; },
       }),
       el('button', {
         class: 'btn',
