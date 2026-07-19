@@ -88,18 +88,59 @@ export async function loadAll() {
       byId.set(id, obj);
     }
 
+    // Two very different situations look alike from here, and conflating them
+    // would be bad either way:
+    //
+    //  - the header is a prefix of the canonical list, i.e. this build added
+    //    columns on the end. Harmless and fixable — the existing cells still
+    //    line up, the header row just needs the new names. extendHeaders()
+    //    does that.
+    //  - the header genuinely disagrees within the columns both know about.
+    //    Rows are written positionally, so every field would land in the wrong
+    //    column. Nothing automatic should touch that; it gets a warning.
+    const canonical = schema.columns;
+    const hasHeader = values.length > 0;
+    const isPrefix = hasHeader
+      && header.length < canonical.length
+      && header.every((c, i) => c === canonical[i]);
+
     cache.set(schema.tab, {
       header,
       byId,
-      // The phone writes rows positionally from its canonical column list, so
-      // a sheet whose header has drifted would mis-map every field. Surfaced
-      // in the UI rather than silently tolerated.
+      headerShort: isPrefix,
       headerMismatch:
-        values.length > 0 && header.join(' ') !== schema.columns.join(' '),
+        hasHeader && !isPrefix && header.join(' ') !== canonical.join(' '),
     });
   }
   loadedAt = new Date();
   emit(null);
+}
+
+/** Tabs whose header row is missing columns this build appended. */
+export function shortHeaders() {
+  return [...cache].filter(([, e]) => e.headerShort).map(([tab]) => tab);
+}
+
+/**
+ * Writes the full canonical header for any tab that's missing trailing
+ * columns.
+ *
+ * Safe precisely because it only runs on a prefix match: every existing name
+ * is rewritten to the identical value, and the new names land in cells that
+ * were empty. No data row is touched.
+ */
+export async function extendHeaders() {
+  const short = shortHeaders();
+  if (!short.length) return [];
+
+  for (const tab of short) {
+    const schema = schemaFor(tab);
+    await sheets.updateRow(tab, 1, schema.columns);
+    const entry = cache.get(tab);
+    entry.header = [...schema.columns];
+    entry.headerShort = false;
+  }
+  return short;
 }
 
 export function headerWarnings() {

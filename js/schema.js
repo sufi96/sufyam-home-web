@@ -54,18 +54,42 @@ export const TABS = [
     box: 'inventory',
     tab: 'Inventory',
     label: 'Inventory',
-    columns: ['id', 'item_name', 'variant_size', 'category', 'current_stock', 'unit', 'min_threshold', 'expiration_date', ...AUDIT],
+    columns: [
+      'id', 'item_name', 'variant_size', 'category', 'current_stock', 'unit',
+      'min_threshold', 'expiration_date', ...AUDIT,
+      // Appended after the audit block, which is unusual but required: the
+      // columns above already exist in the live sheet in this order, and rows
+      // are written positionally. Anything new can only go on the end.
+      'brand', 'stock_group', 'is_refill', 'no_restock',
+    ],
     title: (r) => r.item_name,
     fields: [
       { key: 'item_name', label: 'Item name', type: 'text', required: true },
-      { key: 'variant_size', label: 'Variant / size', type: 'text' },
-      { key: 'category', label: 'Category', type: 'text' },
+      { key: 'brand', label: 'Brand', type: 'suggest', suggest: 'brand', placeholder: 'Colgate, Gillette…' },
+      { key: 'variant_size', label: 'Variant / size', type: 'text', placeholder: '250ml, 4-pack…' },
+      { key: 'category', label: 'Category', type: 'taxonomy', kind: 'inventoryCategory' },
       { key: 'current_stock', label: 'Current stock', type: 'number', default: 0 },
       { key: 'unit', label: 'Unit', type: 'select', options: ['pcs', 'kg', 'g', 'l', 'ml', 'pack', 'can'], default: 'pcs' },
-      { key: 'min_threshold', label: 'Low-stock threshold', type: 'number', default: 0 },
+      { key: 'min_threshold', label: 'Keep at least', type: 'number', default: 0 },
+      {
+        key: 'stock_group',
+        label: 'Stock group',
+        type: 'suggest',
+        suggest: 'stock_group',
+        hint: 'Items sharing a group pool their stock, so "keep at least 2 toothbrushes" '
+          + 'is satisfied by any 2 — whatever the brand or variant.',
+        placeholder: 'Toothbrush, Razor…',
+      },
+      { key: 'is_refill', label: 'Refill / refillable', type: 'bool' },
+      {
+        key: 'no_restock',
+        label: 'Use up, do not restock',
+        type: 'bool',
+        hint: 'Keeps it in the list but out of low-stock warnings.',
+      },
       { key: 'expiration_date', label: 'Expires', type: 'date' },
     ],
-    listColumns: ['item_name', 'variant_size', 'current_stock', 'unit', 'min_threshold', 'expiration_date'],
+    listColumns: ['item_name', 'brand', 'variant_size', 'category', 'current_stock', 'unit', 'min_threshold', 'expiration_date'],
     sort: (a, b) => (a.item_name || '').localeCompare(b.item_name || ''),
   },
   {

@@ -11,6 +11,7 @@
 
 import * as repo from '../repo.js';
 import { parseNum } from '../schema.js';
+import { shortages } from '../stock.js';
 import { iconEl } from '../icons.js';
 import { el, clear, fmtMoney, fmtDate, daysUntil, emptyState } from '../ui.js';
 
@@ -40,10 +41,9 @@ export function renderDashboard(container) {
     const earned = sum(inPeriod.filter(isIncome));
     const delta = prevSpent ? ((spent - prevSpent) / prevSpent) * 100 : null;
 
-    const lowStock = repo.rows('Inventory').filter(
-      (i) => parseNum(i.min_threshold) > 0
-        && parseNum(i.current_stock) <= parseNum(i.min_threshold),
-    );
+    // One entry per thing to buy, not per row: grouped variants collapse to a
+    // single line, and items marked "use up" are left out. See stock.js.
+    const lowStock = shortages(repo.rows('Inventory'));
     const dueSoon = repo.rows('Records_Reminders')
       .map((r) => ({ ...r, days: daysUntil(r.due_date) }))
       .filter((r) => r.days !== null && r.days <= 30)
@@ -292,15 +292,16 @@ function dueRow(r) {
   ]);
 }
 
-function stockRow(i) {
+/** One shortage from stock.js — an item, or a whole stock group. */
+function stockRow(s) {
   return el('div', { class: 'mini-row' }, [
     el('div', { style: 'flex:1;min-width:0' }, [
-      el('div', { class: 'mini-title', text: i.item_name || '(unnamed)' }),
-      el('div', { class: 'mini-sub', text: i.variant_size || i.category || '' }),
+      el('div', { class: 'mini-title', text: s.name }),
+      el('div', { class: 'mini-sub', text: s.detail || '' }),
     ]),
     el('span', {
       class: 'chip chip-danger',
-      text: `${parseNum(i.current_stock)} / ${parseNum(i.min_threshold)} ${i.unit || ''}`.trim(),
+      text: `${s.stock} / ${s.threshold}`,
     }),
   ]);
 }

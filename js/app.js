@@ -9,6 +9,7 @@ import * as repo from './repo.js';
 import { renderEntity } from './views/entity.js';
 import { renderCategories } from './views/categories.js';
 import { renderNotes } from './views/notes.js';
+import { renderInventory } from './views/inventory.js';
 import { renderDashboard } from './views/dashboard.js';
 import { renderSettings } from './views/settings.js';
 import { el, clear, toast, spinner } from './ui.js';
@@ -97,6 +98,7 @@ function render() {
   if (current === 'dashboard') renderDashboard(view);
   else if (current === 'Categories') renderCategories(view);
   else if (current === 'Notes') renderNotes(view);
+  else if (current === 'Inventory') renderInventory(view);
   else renderEntity(view, current);
 }
 
@@ -175,6 +177,13 @@ async function loadData() {
   try {
     view.replaceChildren(spinner());
     await repo.loadAll();
+
+    // A sheet created before this build won't have the columns added since.
+    // Naming them in the header row costs one write and has to happen before
+    // anything saves, or the new values would sit under blank headings.
+    const extended = await repo.extendHeaders();
+    if (extended.length) toast(`Added new columns to ${extended.join(', ')}`);
+
     dataReady = true;
     setBanner('');
 

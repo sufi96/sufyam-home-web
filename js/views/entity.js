@@ -3,6 +3,8 @@
 // column to an entity is a schema.js edit and nothing more.
 
 import * as repo from '../repo.js';
+import * as taxonomy from '../taxonomy.js';
+import { suggestionsFor } from '../stock.js';
 import { schemaFor, TABS, dateOnly, parseBool } from '../schema.js';
 import {
   el, clear, toast, openModal, confirmDialog, emptyState,
@@ -160,6 +162,9 @@ function cellNode(schema, key, row) {
       return document.createTextNode(fmtDate(raw));
     case 'datetime':
       return document.createTextNode(fmtDateTime(raw));
+    case 'bool':
+      return document.createTextNode(parseBool(raw) ? 'Yes' : '—');
+    case 'taxonomy':
     case 'select':
       return raw ? el('span', { class: 'chip', text: String(raw) }) : document.createTextNode('—');
     default:
@@ -209,7 +214,17 @@ export function openForm(schema, row, onSaved, presets = {}) {
         saveBtn.disabled = true;
         saveBtn.textContent = 'Saving…';
         try {
-          await repo.save(schema.tab, { ...(isEdit ? { id: row.id } : {}), ...normalize(schema, values) });
+          const clean = normalize(schema, values);
+          await repo.save(schema.tab, { ...(isEdit ? { id: row.id } : {}), ...clean });
+          // Bank any newly typed taxonomy value, so the next item offers it and
+          // the phone's picker knows it too. After the save, not before: a
+          // failed save shouldn't leave a stray category behind.
+          for (const f of schema.fields) {
+            if (f.type !== 'taxonomy' || !clean[f.key]) continue;
+            try {
+              await taxonomy.ensure(f.kind, [clean[f.key]]);
+            } catch { /* the item saved; a missing bank entry is cosmetic */ }
+          }
           toast(isEdit ? 'Saved' : 'Created');
           close();
           onSaved?.();
@@ -231,6 +246,40 @@ function buildInput(field, values) {
   const set = (v) => { values[field.key] = v; };
 
   switch (field.type) {
+    case 'bool':
+      return el('label', { class: 'check-row' }, [
+        el('input', {
+          type: 'checkbox',
+          checked: parseBool(values[field.key]),
+          onchange: (e) => set(e.target.checked),
+        }),
+        el('span', { text: field.checkboxText || 'Yes' }),
+      ]);
+
+    // A category, brand or group is usually one you've used before, but the
+    // first one never is — a plain select would make the common case easy and
+    // the first case impossible. A datalist offers the existing values without
+    // refusing a new one.
+    case 'taxonomy':
+    case 'suggest': {
+      const listId = `dl-${field.key}-${Math.random().toString(36).slice(2, 8)}`;
+      const options = field.type === 'taxonomy'
+        ? taxonomy.names(field.kind)
+        : suggestionsFor(repo.rows(field.suggestFrom || 'Inventory'), field.suggest || field.key);
+
+      return el('div', {}, [
+        el('input', {
+          class: 'input',
+          type: 'text',
+          list: listId,
+          value: String(values[field.key] ?? ''),
+          placeholder: field.placeholder || '',
+          oninput: (e) => set(e.target.value),
+        }),
+        el('datalist', { id: listId }, options.map((o) => el('option', { value: o }))),
+      ]);
+    }
+
     case 'select':
       return el('select', {
         class: 'select',
@@ -335,6 +384,15 @@ function normalize(schema, values) {
           .map((s) => s.trim())
           .filter(Boolean)
           .join('|');
+        break;
+      case 'bool':
+        out[f.key] = parseBool(v);
+        break;
+      case 'taxonomy':
+      case 'suggest':
+        // Trimmed, because these group by exact text elsewhere and a stray
+        // space would split "Razor " off from "Razor".
+        out[f.key] = String(v ?? '').trim();
         break;
       default:
         out[f.key] = v ?? '';

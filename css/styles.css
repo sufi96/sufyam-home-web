@@ -2191,3 +2191,127 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
 }
 
 .note-author-when { margin-left: auto; flex: 0 0 auto; opacity: .85; }
+
+/* ---------- inventory ---------- */
+
+/* A checkbox and its text as one click target, sharing a baseline. */
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.check-row input { width: 16px; height: 16px; accent-color: var(--accent); }
+.muted-check { font-size: 13px; color: var(--text-dim); }
+
+.stock-group {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+
+.stock-group-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+.stock-group-head h3 { margin: 0; font-size: 14px; font-weight: 700; }
+.stock-group-head .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.stock-group-head .count {
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.stock-group-head .pill-low { margin-left: auto; }
+
+.stock-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.stock-row:last-child { border-bottom: 0; }
+.stock-row.is-deleted { opacity: .5; }
+
+.stock-main { flex: 1; min-width: 0; }
+
+.stock-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.stock-title .name { font-size: 14px; font-weight: 600; }
+.stock-title .brand { font-size: 12.5px; color: var(--text-dim); font-weight: 600; }
+.stock-title .variant { font-size: 12px; color: var(--text-dim); }
+
+.stock-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 4px;
+}
+.stock-meta:empty { margin-top: 0; }
+
+.pill {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.pill-group { background: var(--surface-2); color: var(--text); }
+.pill-refill { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.pill-winding { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.pill-low { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+.pill-ok { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+
+/* The stepper. Fixed width on the count so the +/- buttons don't shuffle
+   sideways every time a number gains a digit. */
+.stock-count {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+.stock-count .step {
+  width: 30px;
+  padding: 0;
+  font-size: 17px;
+  line-height: 1;
+}
+.stock-count .qty {
+  min-width: 66px;
+  text-align: center;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  padding: 0 4px;
+}
+.qty-low, .qty-out { color: var(--danger); font-weight: 700; }
+.qty-winding { color: var(--text-dim); }
+
+.stock-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+
+@media (max-width: 620px) {
+  .stock-row { flex-wrap: wrap; }
+  .stock-main { flex: 1 0 100%; }
+  .stock-actions { margin-left: auto; }
+}
