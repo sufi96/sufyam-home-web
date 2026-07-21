@@ -235,6 +235,21 @@ export function labelPicker(initialCsv, onChange) {
 }
 
 
+/**
+ * A label chip tinted with its own colour from the Taxonomy bank, or the
+ * plain accent style when it has none. Used everywhere a label is displayed
+ * (not picked) — Transactions, Notes — so a colour chosen for it in Taxonomy
+ * actually shows up on the data it labels rather than sitting unused.
+ */
+export function labelChip(name, extraClass = '') {
+  const hex = normaliseHex(taxonomy.byName(taxonomy.KIND_LABEL, name)?.color_hex);
+  return el('span', {
+    class: `chip chip-label${extraClass ? ` ${extraClass}` : ''}`,
+    style: hex ? `background:color-mix(in srgb, ${hex} 18%, transparent);color:${hex}` : '',
+    text: name,
+  });
+}
+
 // A small palette plus a custom swatch. Presets exist because picking from a
 // full colour wheel every time produces a set of notes that don't look like a
 // set; these are chosen to stay legible as a card accent in both themes.

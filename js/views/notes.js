@@ -18,7 +18,7 @@ import {
   checklistProgress, blankBlock, isBlockEmpty,
 } from '../noteblocks.js';
 import { richTextEditor, renderRichText, htmlToText } from '../richtext.js';
-import { labelPicker, colourPicker } from './pickers.js';
+import { labelPicker, labelChip, colourPicker } from './pickers.js';
 import {
   el, clear, append, toast, openModal, confirmDialog, emptyState, fmtDateTime,
 } from '../ui.js';
@@ -259,9 +259,7 @@ export function renderNotes(container) {
       el('div', { class: 'note-preview' }, blocks.slice(0, 4).map(previewBlock)),
 
       labels.length
-        ? el('div', { class: 'note-labels' }, labels.map((l) => el('span', {
-            class: 'chip chip-label', text: l,
-          })))
+        ? el('div', { class: 'note-labels' }, labels.map((l) => labelChip(l)))
         : null,
 
       authorLine(note),
@@ -287,9 +285,7 @@ export function renderNotes(container) {
         el('div', { class: 'locked-text', text: 'Encrypted — unlock to read' }),
       ]),
       splitLabels(note.labels).length
-        ? el('div', { class: 'note-labels' }, splitLabels(note.labels).map((l) => el('span', {
-            class: 'chip chip-label', text: l,
-          })))
+        ? el('div', { class: 'note-labels' }, splitLabels(note.labels).map((l) => labelChip(l)))
         : null,
 
       authorLine(note),
@@ -854,9 +850,7 @@ function openNoteViewer(note, { onChanged, onToggle }) {
       body.append(host);
 
       if (labels.length) {
-        body.append(el('div', { class: 'view-labels' }, labels.map((l) => el('span', {
-          class: 'chip chip-label', text: l,
-        }))));
+        body.append(el('div', { class: 'view-labels' }, labels.map((l) => labelChip(l))));
       }
 
       const audit = auditBlock(note);

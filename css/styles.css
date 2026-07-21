@@ -2572,3 +2572,43 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
 .field-row .field { margin-bottom: 14px; }
 
 .cat-detail-body .toggle-row { margin-bottom: 10px; }
+
+/* ---------- Taxonomy (labels / note categories / record types) ---------- */
+
+/* Reuses .label-chip's pill look for the kind switch, so "which bank am I
+   editing" and "which labels are picked" read as the same kind of control. */
+.tax-kind-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.tax-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-content: flex-start;
+}
+
+.tax-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.tax-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.tax-name { font-size: 14px; font-weight: 560; white-space: nowrap; }
+
+.tax-actions { display: flex; gap: 2px; margin-left: 4px; }
+.tax-actions .btn { width: 28px; height: 28px; padding: 0; }
+
+.tax-backfill { width: 100%; }

@@ -19,7 +19,7 @@ import * as taxonomy from '../taxonomy.js';
 import { needsInteractiveAuth, signIn } from '../auth.js';
 import { parseNum } from '../schema.js';
 import { iconEl, isKnownIcon } from '../icons.js';
-import { iconPicker, labelPicker } from './pickers.js';
+import { iconPicker, labelPicker, labelChip } from './pickers.js';
 import {
   INDENT_PX, attachTreeDrag, deriveTree, categoryBadge, rowTint, normaliseHex,
 } from './cattree.js';
@@ -736,10 +736,7 @@ export function renderCategories(container) {
             : el('span', { class: 'txn-note is-empty', text: 'No note' }),
         ]),
         labels.length
-          ? el('div', { class: 'txn-labels' }, labels.map((l) => el('span', {
-              class: 'chip chip-label',
-              text: l,
-            })))
+          ? el('div', { class: 'txn-labels' }, labels.map((l) => labelChip(l)))
           : null,
       ]),
       el('span', { class: 'micon txn-chevron', text: 'chevron_right' }),

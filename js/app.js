@@ -10,6 +10,7 @@ import { renderEntity } from './views/entity.js';
 import { renderCategories } from './views/categories.js';
 import { renderNotes } from './views/notes.js';
 import { renderInventory } from './views/inventory.js';
+import { renderTaxonomy } from './views/taxonomy.js';
 import { renderDashboard } from './views/dashboard.js';
 import { renderSettings } from './views/settings.js';
 import { el, clear, toast, spinner } from './ui.js';
@@ -137,6 +138,7 @@ function render() {
   else if (current === 'Categories') renderCategories(view);
   else if (current === 'Notes') renderNotes(view);
   else if (current === 'Inventory') renderInventory(view);
+  else if (current === 'Taxonomy') renderTaxonomy(view);
   else renderEntity(view, current);
 }
 
