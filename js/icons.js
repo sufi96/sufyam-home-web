@@ -75,6 +75,10 @@ export const ICON_GROUPS = [
       fan: 'mode_fan_off',
       heater: 'local_fire_department',
       security: 'security',
+      vacuum: 'vacuum_2',
+      mop: 'mop',
+      dishwasher: 'dishwasher',
+      candle: 'candle',
     },
   },
   {
@@ -174,19 +178,53 @@ export const ICON_GROUPS = [
     label: 'Family & people',
     icons: {
       kids: 'child_care',
+      child: 'child_friendly',
+      boy: 'boy',
+      girl: 'girl',
       pet: 'pets',
+      // Material Symbols has no cat, dog or chicken glyph — this rabbit
+      // shape (its actual "cruelty free" icon) is the nearest animal
+      // pictogram the set offers, next to the generic paw above.
+      rabbit: 'cruelty_free',
       school: 'school',
       education: 'menu_book',
       family: 'family_restroom',
+      family_group: 'family_group',
       baby: 'baby_changing_station',
       stroller: 'stroller',
       birthday: 'cake',
+      person: 'person',
+      people: 'people',
+      man: 'man',
+      woman: 'woman',
       elderly: 'elderly',
+      elderly_woman: 'elderly_woman',
       community: 'diversity_3',
+      diversity: 'diversity_1',
       charity: 'volunteer_activism',
       favourite: 'favorite',
       group: 'groups',
       wedding: 'celebration',
+    },
+  },
+  {
+    label: 'Faces & mood',
+    icons: {
+      happy: 'sentiment_very_satisfied',
+      smile: 'sentiment_satisfied',
+      neutral_face: 'sentiment_neutral',
+      sad: 'sentiment_dissatisfied',
+      crying: 'sentiment_very_dissatisfied',
+      mood_good: 'mood',
+      mood_low: 'mood_bad',
+      // Closest the set has to a wink/silly face — Material Symbols doesn't
+      // have a literal winking glyph.
+      playful: 'tag_faces',
+      celebrate_face: 'emoji_emotions',
+      calm: 'sentiment_calm',
+      excited: 'sentiment_excited',
+      worried: 'sentiment_worried',
+      stressed: 'sentiment_stressed',
     },
   },
   {
@@ -195,6 +233,8 @@ export const ICON_GROUPS = [
       entertainment: 'movie',
       music: 'music_note',
       games: 'sports_esports',
+      boardgame: 'toys_and_games',
+      robottoy: 'smart_toy',
       sports: 'sports_soccer',
       hobby: 'palette',
       book: 'auto_stories',
@@ -212,8 +252,12 @@ export const ICON_GROUPS = [
       radio: 'radio',
       toys: 'toys',
       garden: 'local_florist',
+      gardenpot: 'potted_plant',
       camping: 'cabin',
       fishing: 'phishing',
+      beach: 'beach_access',
+      grill: 'outdoor_grill',
+      holidayhome: 'holiday_village',
     },
   },
   {
@@ -331,6 +375,7 @@ export const ICON_GROUPS = [
       forest: 'forest',
       weather: 'wb_sunny',
       clock: 'schedule',
+      alarm: 'alarm',
       calendar: 'calendar_month',
       location: 'place',
       language: 'translate',
@@ -388,54 +433,21 @@ export const ICON_KEYS = Object.fromEntries(
   ICON_GROUPS.flatMap((g) => Object.entries(g.icons)),
 );
 
-// ---------- hand-curated extras: emoji + month numbers ----------
+// ---------- hand-curated extra: month numbers ----------
 //
-// NOT part of the Dart-generated map above, and not guaranteed to render as
-// anything meaningful on the phone until its icon map grows matching entries
-// — these are plain Unicode characters keyed by name, not Material Symbol
-// ligatures, so isTextIcon() below is what tells iconEl() to print them as
-// themselves instead of running them through the icon font.
+// NOT part of the Dart-generated map above — a plain digit string keyed by
+// name, not a Material Symbol ligature, so isTextIcon() below is what tells
+// iconEl() to print it as itself instead of running it through the icon
+// font. (A colourful emoji set used to live here too; it clashed with the
+// monochrome Material Symbols look everywhere else, so anything needing a
+// face, an animal, or a household object now has a real outline icon above
+// instead — see Faces & mood, Family & people, Home & living, Leisure.)
 export const EXTRA_ICON_GROUPS = [
   {
     label: 'Months',
     icons: Object.fromEntries(
       Array.from({ length: 12 }, (_, i) => [`month-${i + 1}`, String(i + 1)]),
     ),
-  },
-  {
-    label: 'Emoji',
-    icons: {
-      emoji_party: '🎉',
-      emoji_birthday: '🎂',
-      emoji_home: '🏠',
-      emoji_car: '🚗',
-      emoji_medicine: '💊',
-      emoji_calendar: '📅',
-      emoji_heart: '❤️',
-      emoji_gift: '🎁',
-      emoji_food: '🍔',
-      emoji_coffee: '☕',
-      emoji_education: '🎓',
-      emoji_travel: '✈️',
-      emoji_pet: '🐾',
-      emoji_money: '💰',
-      emoji_card: '💳',
-      emoji_fire: '🔥',
-      emoji_star: '⭐',
-      emoji_warning: '⚠️',
-      emoji_check: '✅',
-      emoji_cross: '❌',
-      emoji_lock: '🔒',
-      emoji_holiday: '🎄',
-      emoji_receipt: '🧾',
-      emoji_package: '📦',
-      emoji_cart: '🛒',
-      emoji_hospital: '🏥',
-      emoji_sparkle: '🌟',
-      emoji_clock: '🕐',
-      emoji_phone: '📱',
-      emoji_water: '💧',
-    },
   },
 ];
 

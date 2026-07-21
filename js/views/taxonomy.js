@@ -23,12 +23,36 @@ import {
   el, clear, toast, openModal, confirmDialog, emptyState, fmtMoney, fmtDate,
 } from '../ui.js';
 
-// How to summarise one matching row under "Appears in", per source tab.
-// Falls back to no subtitle for a tab that isn't listed.
-const ROW_META = {
-  Transactions: (r) => `${fmtMoney(r.amount)} · ${fmtDate(r.transaction_date)}`,
-  Notes: (r) => fmtDate(r.updated_at),
-  Records_Reminders: (r) => `Due ${fmtDate(r.due_date)}`,
+// How one matching row renders under "Appears in", per source tab — reuses
+// the .txn-row lead+body layout the Categories page draws its own
+// transaction list with, amount and date first, so a label's expenses read
+// the same way there and here.
+const USAGE_ROW = {
+  Transactions: (r) => el('div', { class: 'txn-row is-static' }, [
+    el('div', { class: 'txn-lead' }, [
+      el('div', { class: 'txn-amount', text: fmtMoney(r.amount) }),
+      el('div', { class: 'txn-date', text: fmtDate(r.transaction_date) }),
+    ]),
+    el('div', { class: 'txn-body' }, [
+      el('div', { class: 'txn-top' }, [
+        r.notes
+          ? el('span', { class: 'txn-note', text: r.notes })
+          : el('span', { class: 'txn-note is-empty', text: 'No note' }),
+      ]),
+    ]),
+  ]),
+  Notes: (r) => el('div', { class: 'txn-row is-static' }, [
+    el('div', { class: 'txn-lead' }, [
+      el('div', { class: 'txn-amount', text: r.title || '(untitled)' }),
+      el('div', { class: 'txn-date', text: fmtDate(r.updated_at) }),
+    ]),
+  ]),
+  Records_Reminders: (r) => el('div', { class: 'txn-row is-static' }, [
+    el('div', { class: 'txn-lead' }, [
+      el('div', { class: 'txn-amount', text: r.title || '(untitled)' }),
+      el('div', { class: 'txn-date', text: `Due ${fmtDate(r.due_date)}` }),
+    ]),
+  ]),
 };
 
 const MAX_USAGE_ROWS = 6;
@@ -229,7 +253,6 @@ export function renderTaxonomy(container) {
         field('Icon', iconPicker(row.icon_key, (v) => setField(row.id, 'icon_key', v))),
         field('Colour', colourPicker(row.color_hex, (v) => setField(row.id, 'color_hex', v), { large: true })),
       ]),
-      groups.length ? usageSection(groups) : null,
       el('div', { class: 'detail-actions' }, [
         el('button', {
           class: 'btn btn-ghost btn-danger',
@@ -238,6 +261,11 @@ export function renderTaxonomy(container) {
         }),
       ]),
     ]));
+
+    // A separate card, not another section of the one above — editing a
+    // label and seeing where it's used are different jobs, and running them
+    // together read as one long form.
+    if (groups.length) detailPane.append(usageCard(groups));
   }
 
   /**
@@ -389,19 +417,23 @@ function usageDetails(kind, name) {
   return groups;
 }
 
-function usageSection(groups) {
-  return el('div', { class: 'detail-items' }, [
-    el('div', { class: 'pane-title', text: 'Appears in' }),
-    ...groups.map(({ tab, rows }) => el('div', { class: 'usage-group' }, [
-      el('div', { class: 'usage-group-label', text: `${schemaFor(tab).label} (${rows.length})` }),
-      ...rows.slice(0, MAX_USAGE_ROWS).map((r) => el('div', { class: 'usage-row' }, [
-        el('span', { class: 'usage-row-title', text: schemaFor(tab).title(r) || '(untitled)' }),
-        el('span', { class: 'usage-row-meta', text: (ROW_META[tab] || (() => ''))(r) }),
-      ])),
-      rows.length > MAX_USAGE_ROWS
-        ? el('div', { class: 'hint', text: `+${rows.length - MAX_USAGE_ROWS} more` })
-        : null,
-    ])),
+function usageCard(groups) {
+  return el('div', { class: 'card tax-usage-card' }, [
+    el('div', { class: 'card-title', text: 'Appears in' }),
+    ...groups.map(({ tab, rows }) => usageGroup(tab, rows)),
+  ]);
+}
+
+function usageGroup(tab, rows) {
+  const build = USAGE_ROW[tab] || ((r) => el('div', { class: 'txn-row is-static' }, [
+    el('div', { class: 'txn-lead' }, [el('div', { class: 'txn-amount', text: schemaFor(tab).title(r) || '(untitled)' })]),
+  ]));
+  return el('div', { class: 'usage-group' }, [
+    el('div', { class: 'usage-group-label', text: `${schemaFor(tab).label} (${rows.length})` }),
+    el('div', { class: 'txn-list is-boxed' }, rows.slice(0, MAX_USAGE_ROWS).map(build)),
+    rows.length > MAX_USAGE_ROWS
+      ? el('div', { class: 'hint', text: `+${rows.length - MAX_USAGE_ROWS} more` })
+      : null,
   ]);
 }
 

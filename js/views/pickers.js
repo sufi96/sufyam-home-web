@@ -306,12 +306,21 @@ export function colourPicker(initial, onChange, { compact = false, large = false
   // (including this element) on every change, and removing the element the
   // browser's native colour dialog is anchored to closes that dialog the
   // instant you click a shade inside it.
+  //
+  // 'input' fires continuously while dragging inside the native dialog —
+  // sometimes dozens of times for one drag. onChange() usually goes straight
+  // to a Sheets write (see taxonomy.js), so calling it there turned one drag
+  // into a burst of API calls and tripped Google's per-minute rate limit.
+  // 'change' fires once, when the dialog closes, which is what onChange()
+  // actually needs; 'input' only keeps the preset-dot ring visually in sync
+  // while you drag.
   const swatch = el('input', {
     type: 'color',
     class: 'colour-swatch',
     value: value || '#66bb6a',
     title: compact ? 'Colour' : 'Custom colour',
-    oninput: (e) => { value = e.target.value; onChange(value); paintDots(); },
+    oninput: (e) => { value = e.target.value; paintDots(); },
+    onchange: (e) => { value = e.target.value; onChange(value); paintDots(); },
   });
 
   function set(hex) {
