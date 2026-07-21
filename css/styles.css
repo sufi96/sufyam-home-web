@@ -2575,40 +2575,40 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
 
 /* ---------- Taxonomy (labels / note categories / record types) ---------- */
 
-/* Reuses .label-chip's pill look for the kind switch, so "which bank am I
-   editing" and "which labels are picked" read as the same kind of control. */
-.tax-kind-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
-
-.tax-grid {
+/* A grouped segmented control, not floating pills — this switches which bank
+   a whole settings page is editing, a different job from the toggleable
+   .label-chip pills used to pick labels onto a transaction or note, so it
+   deliberately doesn't borrow that look. */
+.tax-tabs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-content: flex-start;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  gap: 2px;
 }
 
-.tax-card {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 8px 8px 14px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+.tax-tab {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 560;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tax-tab:hover { color: var(--text); }
+
+.tax-tab.is-active {
   background: var(--surface);
+  color: var(--text);
   box-shadow: var(--shadow);
 }
 
-.tax-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  flex: 0 0 auto;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-}
-
-.tax-name { font-size: 14px; font-weight: 560; white-space: nowrap; }
-
-.tax-actions { display: flex; gap: 2px; margin-left: 4px; }
-.tax-actions .btn { width: 28px; height: 28px; padding: 0; }
-
-.tax-backfill { width: 100%; }
+/* Plain label text in the list row — unlike .cat-name this isn't an inline
+   rename target (renaming happens in the detail pane), so it skips that
+   class's text-cursor/hover affordance. */
+.tax-row-name { font-weight: 610; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
