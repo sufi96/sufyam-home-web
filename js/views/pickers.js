@@ -303,7 +303,11 @@ export function labelChip(name, extraClass = '') {
   });
 }
 
-/** Expense categories depth-first, each with its nesting depth. */
+/**
+ * Expense categories depth-first, each with its nesting depth and its
+ * *effective* parent — a parent_id pointing at a deleted row reads as a root,
+ * so the tree can't hang off something that isn't there.
+ */
 function expenseTree() {
   const rows = repo.rows('Categories');
   const live = new Set(rows.map((r) => r.id));
@@ -320,7 +324,7 @@ function expenseTree() {
   const out = [];
   const walk = (parentId, depth) => {
     for (const row of kids.get(parentId) || []) {
-      out.push({ row, depth });
+      out.push({ row, depth, parent: parentId });
       if (depth < 3) walk(row.id, depth + 1);
     }
   };
@@ -363,25 +367,67 @@ export function scopePicker(initialCsv, onChange) {
 
   function open() {
     const draft = new Set(ids);
-    let close = () => {};
+    const expense = expenseTree();
+    const parentOf = new Map(expense.map(({ row, parent }) => [row.id, parent]));
+    const nameOf = new Map(expense.map(({ row }) => [row.id, row.name]));
+    const expenseHost = el('div', { class: 'scope-list' });
 
-    const rowFor = (id, name, depth) => {
-      const check = el('input', {
-        type: 'checkbox',
-        checked: draft.has(id) || null,
-        onchange: (e) => { if (e.target.checked) draft.add(id); else draft.delete(id); },
-      });
-      return el('label', {
-        class: 'scope-row',
-        style: `--indent:${depth * 18}px`,
-      }, [check, el('span', { text: name || '(unnamed)' })]);
+    /**
+     * The nearest ticked ancestor of `id`, or ''.
+     *
+     * Ticking a category already covers everything nested inside it — that's
+     * what taxonomy.expenseContext() walking the ancestor chain buys. So
+     * rather than storing every descendant id too, a covered row is shown
+     * ticked and locked: it says the same thing, keeps the stored scope down
+     * to the one id you actually chose, and means a subcategory added later
+     * is covered automatically instead of being silently left out.
+     */
+    const coveredBy = (id) => {
+      const guard = new Set();
+      let p = parentOf.get(id) || '';
+      while (p && !guard.has(p)) {
+        guard.add(p);
+        if (draft.has(p)) return p;
+        p = parentOf.get(p) || '';
+      }
+      return '';
     };
 
-    close = openModal({
+    const rowFor = (id, name, depth, { cascades = false } = {}) => {
+      const covered = cascades ? coveredBy(id) : '';
+      const check = el('input', {
+        type: 'checkbox',
+        checked: draft.has(id) || Boolean(covered) || null,
+        disabled: Boolean(covered) || null,
+        onchange: (e) => {
+          if (e.target.checked) draft.add(id); else draft.delete(id);
+          if (cascades) paintExpense(); // descendants tick/untick with it
+        },
+      });
+      return el('label', {
+        class: `scope-row${covered ? ' is-covered' : ''}`,
+        style: `--indent:${depth * 20}px`,
+        title: covered ? `Covered by ${nameOf.get(covered) || 'its parent'}` : '',
+      }, [
+        check,
+        el('span', { class: 'scope-name', text: name || '(unnamed)' }),
+        covered
+          ? el('span', { class: 'scope-via', text: `via ${nameOf.get(covered) || 'parent'}` })
+          : null,
+      ]);
+    };
+
+    function paintExpense() {
+      clear(expenseHost);
+      for (const { row, depth } of expense) {
+        expenseHost.append(rowFor(row.id, row.name, depth, { cascades: true }));
+      }
+    }
+
+    openModal({
       title: 'Where does this label show?',
       icon: '🎯',
-      render: (body, dismiss) => {
-        close = dismiss;
+      render: (body) => {
         body.append(el('div', {
           class: 'hint',
           style: 'margin-bottom:12px',
@@ -389,11 +435,10 @@ export function scopePicker(initialCsv, onChange) {
             + 'covers everything nested inside it.',
         }));
 
-        const expense = expenseTree();
         if (expense.length) {
           body.append(el('div', { class: 'usage-group-label', text: 'Expense categories' }));
-          body.append(el('div', { class: 'scope-list' },
-            expense.map(({ row, depth }) => rowFor(row.id, row.name, depth))));
+          body.append(expenseHost);
+          paintExpense();
         }
 
         const noteCats = taxonomy.list(taxonomy.KIND_NOTE_CATEGORY);
@@ -403,6 +448,7 @@ export function scopePicker(initialCsv, onChange) {
             style: 'margin-top:14px',
             text: 'Note categories',
           }));
+          // Note categories are flat, so there is nothing to cascade into.
           body.append(el('div', { class: 'scope-list' },
             noteCats.map((row) => rowFor(row.id, row.name, 0))));
         }
@@ -418,7 +464,15 @@ export function scopePicker(initialCsv, onChange) {
         el('button', {
           class: 'btn',
           text: 'Apply',
-          onclick: () => { ids = draft; paint(); onChange([...draft]); dismiss(); },
+          onclick: () => {
+            // An id whose ancestor is also ticked adds nothing — drop it so
+            // the stored scope stays the set you actually chose.
+            const kept = [...draft].filter((id) => !coveredBy(id));
+            ids = new Set(kept);
+            paint();
+            onChange(kept);
+            dismiss();
+          },
         }),
       ],
     });

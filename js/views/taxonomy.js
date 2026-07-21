@@ -55,8 +55,6 @@ const USAGE_ROW = {
   ]),
 };
 
-const MAX_USAGE_ROWS = 6;
-
 const KINDS = [
   {
     kind: taxonomy.KIND_LABEL,
@@ -403,7 +401,9 @@ export function renderTaxonomy(container) {
 
   function openCreate() {
     const meta = metaOf(activeKind);
+    const isLabel = activeKind === taxonomy.KIND_LABEL;
     let name = '';
+    let scope = [];
 
     openModal({
       title: `New ${meta.singular.toLowerCase()}`,
@@ -418,6 +418,16 @@ export function renderTaxonomy(container) {
           }),
           el('div', { class: 'hint', text: 'Icon and colour are set afterwards, in the detail pane.' }),
         ]));
+        // Scope is offered up front because it decides where the label can be
+        // reached from — leaving it to the detail pane meant a new label was
+        // global until you went back and narrowed it.
+        if (isLabel) {
+          body.append(field(
+            'Shows in',
+            scopePicker('', (v) => { scope = v; }),
+            { hint: 'Everywhere by default. Ticking a category covers everything inside it.' },
+          ));
+        }
       },
       actions: (close) => {
         const btn = el('button', { class: 'btn', text: 'Add' });
@@ -426,7 +436,10 @@ export function renderTaxonomy(container) {
           if (!clean) return;
           btn.disabled = true;
           try {
-            const created = await taxonomy.create(activeKind, { name: clean });
+            const created = await taxonomy.create(activeKind, {
+              name: clean,
+              ...(isLabel ? { scope_ids: scope.join('|') } : {}),
+            });
             close();
             selectedId = created.id;
             paintList();
@@ -538,12 +551,11 @@ function usageGroup(tab, rows) {
   const build = USAGE_ROW[tab] || ((r) => el('div', { class: 'txn-row is-static' }, [
     el('div', { class: 'txn-lead' }, [el('div', { class: 'txn-amount', text: schemaFor(tab).title(r) || '(untitled)' })]),
   ]));
+  // Every match is rendered and the box scrolls, rather than cutting the list
+  // off at N with a "+X more" that names a number you then can't reach.
   return el('div', { class: 'usage-group' }, [
     el('div', { class: 'usage-group-label', text: `${schemaFor(tab).label} (${rows.length})` }),
-    el('div', { class: 'txn-list is-boxed' }, rows.slice(0, MAX_USAGE_ROWS).map(build)),
-    rows.length > MAX_USAGE_ROWS
-      ? el('div', { class: 'hint', text: `+${rows.length - MAX_USAGE_ROWS} more` })
-      : null,
+    el('div', { class: 'txn-list is-boxed' }, rows.map(build)),
   ]);
 }
 

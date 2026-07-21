@@ -234,7 +234,7 @@ export function scopeLabelFor(id) {
 
 /** Adds one entry and returns it. */
 export async function create(kind, {
-  name, icon_key = '', color_hex = '', parent_id = '', min_threshold = 0,
+  name, icon_key = '', color_hex = '', parent_id = '', min_threshold = 0, scope_ids = '',
 }) {
   const clean = String(name || '').trim();
   if (!clean) throw new Error('Name is required');
@@ -249,7 +249,8 @@ export async function create(kind, {
   }
   const order = list(kind).reduce((max, t) => Math.max(max, parseNum(t.sort_order)), 0) + 1;
   return repo.save('Taxonomy', {
-    kind, name: clean, icon_key, color_hex, parent_id, min_threshold, sort_order: order,
+    kind, name: clean, icon_key, color_hex, parent_id, min_threshold, scope_ids,
+    sort_order: order,
   });
 }
 

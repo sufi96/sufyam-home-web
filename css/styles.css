@@ -2481,7 +2481,11 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
 .txn-list.is-boxed {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow: hidden;
+  /* Scrolls rather than truncating: every match stays reachable, and a label
+     used on 40 things doesn't push the rest of the pane off-screen. */
+  max-height: 264px;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 .txn-row.is-static { cursor: default; }
 .txn-row.is-static:hover { background: none; }
@@ -2678,7 +2682,8 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
 .scope-list {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow: hidden;
+  overflow: hidden auto;
+  max-height: 40vh;
 }
 
 /* Indented to mirror the category tree — ticking a parent covers its
@@ -2686,12 +2691,68 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
 .scope-row {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 12px 7px calc(12px + var(--indent, 0px));
+  gap: 10px;
+  padding: 8px 12px 8px calc(12px + var(--indent, 0px));
   border-bottom: 1px solid var(--border);
   font-size: 13.5px;
   cursor: pointer;
 }
 .scope-row:last-child { border-bottom: 0; }
 .scope-row:hover { background: var(--surface-2); }
-.scope-row input { flex: 0 0 auto; margin: 0; cursor: pointer; }
+.scope-name { flex: 1; min-width: 0; }
+
+/* A row ticked because an ancestor is ticked: it reads as on, but it isn't
+   the thing that's stored, so it's locked and says where it came from. */
+.scope-row.is-covered { cursor: default; color: var(--text-dim); }
+.scope-row.is-covered:hover { background: none; }
+
+.scope-via {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: .8;
+  font-style: italic;
+}
+
+/* The native tickbox is 13px, differently shaped on every platform, and does
+   not take the accent colour. Drawn here instead so it matches the buttons
+   and switches the rest of the app uses. */
+.scope-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 0 0 auto;
+  width: 19px;
+  height: 19px;
+  margin: 0;
+  border: 1.5px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  cursor: pointer;
+  display: grid;
+  place-content: center;
+  transition: background .12s ease, border-color .12s ease;
+}
+
+.scope-row input[type="checkbox"]:hover { border-color: var(--accent); }
+
+.scope-row input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* The tick itself: two borders of an empty box, rotated into a checkmark. */
+.scope-row input[type="checkbox"]:checked::after {
+  content: '';
+  width: 10px;
+  height: 5.5px;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(-45deg) translate(1px, -1.5px);
+}
+
+.scope-row input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.scope-row input[type="checkbox"]:disabled { cursor: default; opacity: .5; }
