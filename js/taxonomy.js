@@ -165,6 +165,71 @@ export function labelUsage() {
 }
 
 
+// ---------- label scope ----------
+//
+// A label with no scope is global and offered everywhere. A scoped one is
+// offered only where its context matches: pick "Vehicle" and you get AXIA and
+// PERDANA but not McD, while "2026" keeps showing under both.
+//
+// Scope is stored as ids rather than names so renaming a category doesn't
+// silently unscope every label pointing at it — the one place in this file
+// that prefers ids to names, and it can, because nothing outside the web
+// console reads the column.
+
+/** The ids a label is scoped to. Empty array = global. */
+export function scopeIds(entry) {
+  return String(entry?.scope_ids || '')
+    .split('|')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Context for an expense category: itself and every ancestor.
+ *
+ * Ancestors are included so scoping a label to "Vehicle" also offers it under
+ * "Vehicle > Fuel" — scoping to a parent is how you cover a whole branch
+ * without listing each child.
+ */
+export function expenseContext(categoryId) {
+  if (!categoryId) return [];
+  const byId = new Map(repo.rows('Categories').map((c) => [c.id, c]));
+  const out = [];
+  const guard = new Set(); // a parent_id cycle would otherwise spin forever
+  let cur = byId.get(categoryId);
+  while (cur && !guard.has(cur.id)) {
+    guard.add(cur.id);
+    out.push(cur.id);
+    cur = cur.parent_id ? byId.get(cur.parent_id) : null;
+  }
+  return out;
+}
+
+/** Context for a note: the id of the category it's filed under, by name. */
+export function noteContext(categoryName) {
+  const entry = byName(KIND_NOTE_CATEGORY, categoryName);
+  return entry ? [entry.id] : [];
+}
+
+/** True when a label should be offered in this context. */
+export function inScope(entry, contextIds) {
+  const ids = scopeIds(entry);
+  if (!ids.length) return true; // global
+  if (!contextIds?.length) return false;
+  return ids.some((id) => contextIds.includes(id));
+}
+
+/**
+ * Readable name for one scope id, whichever tab it came from.
+ * Returns '' for an id whose category has since been deleted.
+ */
+export function scopeLabelFor(id) {
+  const category = repo.byId('Categories', id);
+  if (category) return category.name || '';
+  const noteCategory = repo.byId('Taxonomy', id);
+  return noteCategory ? noteCategory.name || '' : '';
+}
+
 // ---------- CRUD, for the kinds the web console manages directly ----------
 
 /** Adds one entry and returns it. */

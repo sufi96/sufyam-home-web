@@ -2665,3 +2665,33 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
 }
 
 .save-bar .spacer { flex: 1; }
+
+/* ---------- Label scope ---------- */
+
+.label-search .label-scope-toggle { flex: 0 0 auto; white-space: nowrap; }
+.label-search .label-scope-toggle.is-on {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
+}
+
+.scope-list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+/* Indented to mirror the category tree — ticking a parent covers its
+   children, so the nesting is the explanation. */
+.scope-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px 7px calc(12px + var(--indent, 0px));
+  border-bottom: 1px solid var(--border);
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.scope-row:last-child { border-bottom: 0; }
+.scope-row:hover { background: var(--surface-2); }
+.scope-row input { flex: 0 0 auto; margin: 0; cursor: pointer; }

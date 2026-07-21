@@ -17,7 +17,7 @@ import * as repo from '../repo.js';
 import * as taxonomy from '../taxonomy.js';
 import { schemaFor } from '../schema.js';
 import { categoryBadge, rowTint } from './cattree.js';
-import { colourPicker, iconPicker } from './pickers.js';
+import { colourPicker, iconPicker, scopePicker } from './pickers.js';
 import { field } from './catfields.js';
 import {
   el, clear, toast, openModal, confirmDialog, emptyState, fmtMoney, fmtDate,
@@ -312,6 +312,15 @@ export function renderTaxonomy(container) {
         }), { required: true }),
         field('Icon', iconPicker(row.icon_key, (v) => setField(stored.id, 'icon_key', v))),
         field('Colour', colourPicker(row.color_hex, (v) => setField(stored.id, 'color_hex', v), { large: true })),
+        // Only labels are scoped. A note category or record type IS the thing
+        // being picked from, so narrowing it by category would be circular.
+        activeKind === taxonomy.KIND_LABEL
+          ? field(
+            'Shows in',
+            scopePicker(row.scope_ids, (v) => setField(stored.id, 'scope_ids', v.join('|'))),
+            { hint: 'Which categories offer this label when tagging. Everywhere by default.' },
+          )
+          : null,
       ]),
       el('div', { class: 'detail-actions' }, [
         el('button', {

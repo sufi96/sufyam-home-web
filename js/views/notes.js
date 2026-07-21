@@ -619,6 +619,17 @@ function openNoteForm(note, onSaved) {
         el('button', { type: 'button', class: 'btn btn-sm', text: 'Add', onclick: addCategory }),
       );
 
+      // Labels can be scoped to a note category as well as an expense one, so
+      // refiling the note re-scopes the picker in place.
+      const labelsField = labelPicker(
+        values.labels,
+        (names) => { values.labels = names.join('|'); },
+        { contextIds: taxonomy.noteContext(values.category) },
+      );
+      categorySelect.addEventListener('change', () => {
+        labelsField.setContext(taxonomy.noteContext(values.category));
+      });
+
       const categoryField = el('div', {}, [
         el('div', { class: 'select-with-add' }, [
           categorySelect,
@@ -651,7 +662,7 @@ function openNoteForm(note, onSaved) {
 
         field('Colour', colourPicker(values.color_hex, (hex) => { values.color_hex = hex; })),
         field('Content', blockHost),
-        field('Labels', labelPicker(values.labels, (names) => { values.labels = names.join('|'); })),
+        field('Labels', labelsField),
 
         el('label', { class: `switch-row${values.secure ? ' is-on' : ''}` }, [
           el('span', { class: 'micon switch-icon', text: 'lock' }),

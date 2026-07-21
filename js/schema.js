@@ -190,6 +190,16 @@ export const TABS = [
       // stock rule for everything under it, so "keep at least 2 toothbrushes"
       // is answered by the category rather than by any one brand's row.
       'parent_id', 'min_threshold',
+      // Which categories a label is offered under, '|'-separated. Empty means
+      // global — every label predating this column keeps showing everywhere.
+      //
+      // Holds ids from TWO tabs: Categories (an expense category) and Taxonomy
+      // itself (a noteCategory). That's safe because every id here is a
+      // crypto.randomUUID(), so the two spaces cannot collide, and it lets one
+      // label be scoped to "Vehicle" expenses and "Car" notes at once.
+      // Resolution order is Categories first, then Taxonomy — see
+      // taxonomy.scopeLabelFor().
+      'scope_ids',
     ],
     title: (r) => r.name,
     fields: [

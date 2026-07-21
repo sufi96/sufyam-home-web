@@ -900,6 +900,18 @@ function openTransaction(txn, onSaved) {
         if (group.children.length) categorySelect.append(group);
       }
 
+      // Labels are offered by category, so moving the transaction re-scopes
+      // the picker in place. Registered after the select's own handler above,
+      // which is what has already written the new id into values.
+      const labelsField = labelPicker(
+        values.labels,
+        (names) => { values.labels = names.join('|'); },
+        { contextIds: taxonomy.expenseContext(values.category_id) },
+      );
+      categorySelect.addEventListener('change', () => {
+        labelsField.setContext(taxonomy.expenseContext(values.category_id));
+      });
+
       body.append(
         el('div', { class: 'field-row' }, [
           field('Amount', el('input', {
@@ -919,9 +931,7 @@ function openTransaction(txn, onSaved) {
         field('Category', categorySelect, {
           hint: 'Move this transaction to any category, subcategory or sub-subcategory.',
         }),
-        field('Labels', labelPicker(values.labels, (names) => {
-          values.labels = names.join('|');
-        })),
+        field('Labels', labelsField),
         field('Notes', el('textarea', {
           class: 'textarea',
           text: values.notes,

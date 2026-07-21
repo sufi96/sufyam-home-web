@@ -6,7 +6,9 @@
 // data bank so every device sees them.
 
 import { ALL_ICON_GROUPS, iconEl, isKnownIcon } from '../icons.js';
+import * as repo from '../repo.js';
 import * as taxonomy from '../taxonomy.js';
+import { parseNum } from '../schema.js';
 import { el, clear, toast, openModal } from '../ui.js';
 
 /**
@@ -114,8 +116,19 @@ export function iconPicker(initial, onChange) {
  * Label picker: toggleable chips from the Taxonomy bank, plus a box to add a
  * new one. `onChange(namesArray)` fires on every change. Anything typed here
  * is banked on save by the caller via taxonomy.ensure().
+ *
+ * `contextIds` narrows the offer to labels scoped to that context (plus every
+ * global one) — see taxonomy.inScope(). Pass null to skip scoping entirely,
+ * which is what a picker spanning several categories at once has to do.
+ *
+ * The narrowing is a default, never a wall: a "Show all" toggle reveals the
+ * rest, and a label already on this row is always offered whatever its scope,
+ * so nothing you've already applied can become unreachable.
+ *
+ * The returned node carries setContext() so a form whose category changes can
+ * re-filter in place rather than rebuild the picker and lose its state.
  */
-export function labelPicker(initialCsv, onChange) {
+export function labelPicker(initialCsv, onChange, { contextIds = null } = {}) {
   const selected = new Set(
     String(initialCsv || '').split('|').map((s) => s.trim()).filter(Boolean),
   );
@@ -124,11 +137,14 @@ export function labelPicker(initialCsv, onChange) {
   const emit = () => onChange([...selected]);
 
   let filter = '';
+  let showAll = false;
+  let context = contextIds;
 
   function render() {
     clear(wrap);
     const usage = taxonomy.labelUsage();
-    const banked = taxonomy.names(taxonomy.KIND_LABEL);
+    const entries = taxonomy.list(taxonomy.KIND_LABEL);
+    const banked = entries.map((e) => e.name).filter(Boolean);
 
     // Anything already on this row but not in the bank still needs a chip.
     const everything = [...new Set([...banked, ...selected])].sort((a, b) => {
@@ -136,21 +152,36 @@ export function labelPicker(initialCsv, onChange) {
       return d !== 0 ? d : a.localeCompare(b);
     });
 
+    const scoping = context !== null;
+    const offered = new Set(
+      entries.filter((e) => taxonomy.inScope(e, context)).map((e) => e.name),
+    );
+    // Out-of-scope labels drop out unless "Show all" is on. A label already
+    // applied stays regardless — hiding it would make it impossible to remove.
+    // An unbanked name (typed before it was banked) has no scope to judge, so
+    // it counts as offered.
+    const inScope = (n) => !scoping || showAll || selected.has(n) || !banked.includes(n)
+      || offered.has(n);
+    const scopeVisible = everything.filter(inScope);
+    const hidden = everything.length - scopeVisible.length;
+
     // Selected labels always show, even when filtered out, so a search can't
     // hide what is currently applied.
     const all = filter
-      ? everything.filter((n) => n.toLowerCase().includes(filter) || selected.has(n))
-      : everything;
+      ? scopeVisible.filter((n) => n.toLowerCase().includes(filter) || selected.has(n))
+      : scopeVisible;
 
     // The search box only earns its space once the bank is big enough to
-    // overflow the capped chip area.
-    if (everything.length > 8) {
+    // overflow the capped chip area. `showAll` keeps the row alive even when
+    // nothing is hidden any more — it holds the only way back to the scoped
+    // view, and revealing everything must not be a one-way door.
+    if (scopeVisible.length > 8 || hidden || showAll) {
       wrap.append(el('div', { class: 'label-search' }, [
         el('span', { class: 'micon label-search-icon', text: 'search' }),
         el('input', {
           class: 'input',
           type: 'search',
-          placeholder: `Filter ${everything.length} labels…`,
+          placeholder: `Filter ${scopeVisible.length} label${scopeVisible.length === 1 ? '' : 's'}…`,
           value: filter,
           oninput: (e) => {
             filter = e.target.value.trim().toLowerCase();
@@ -158,6 +189,17 @@ export function labelPicker(initialCsv, onChange) {
             wrap.querySelector('.label-search input')?.focus();
           },
         }),
+        hidden || showAll
+          ? el('button', {
+              type: 'button',
+              class: `btn btn-ghost btn-sm label-scope-toggle${showAll ? ' is-on' : ''}`,
+              title: showAll
+                ? 'Show only labels for this category'
+                : 'Show every label, including other categories\'',
+              text: showAll ? 'Scoped' : `Show all (${hidden})`,
+              onclick: (e) => { e.preventDefault(); showAll = !showAll; render(); },
+            })
+          : null,
       ]));
     }
 
@@ -239,6 +281,9 @@ export function labelPicker(initialCsv, onChange) {
   }
 
   render();
+  // Lets a form re-scope the picker when its category changes, without
+  // rebuilding it and losing what's already selected.
+  wrap.setContext = (ids) => { context = ids; render(); };
   return wrap;
 }
 
@@ -256,6 +301,130 @@ export function labelChip(name, extraClass = '') {
     style: hex ? `background:color-mix(in srgb, ${hex} 18%, transparent);color:${hex}` : '',
     text: name,
   });
+}
+
+/** Expense categories depth-first, each with its nesting depth. */
+function expenseTree() {
+  const rows = repo.rows('Categories');
+  const live = new Set(rows.map((r) => r.id));
+  const kids = new Map();
+  for (const row of rows) {
+    const parent = row.parent_id && live.has(row.parent_id) ? row.parent_id : '';
+    if (!kids.has(parent)) kids.set(parent, []);
+    kids.get(parent).push(row);
+  }
+  for (const list of kids.values()) {
+    list.sort((a, b) => parseNum(a.sort_order) - parseNum(b.sort_order)
+      || String(a.name || '').localeCompare(String(b.name || '')));
+  }
+  const out = [];
+  const walk = (parentId, depth) => {
+    for (const row of kids.get(parentId) || []) {
+      out.push({ row, depth });
+      if (depth < 3) walk(row.id, depth + 1);
+    }
+  };
+  walk('', 0);
+  return out;
+}
+
+/**
+ * Scope picker: which categories a label is offered under.
+ *
+ * Nothing ticked means global. Ticking a parent covers everything beneath it,
+ * so the tree is shown indented and the hint says so rather than making you
+ * tick each child.
+ *
+ * `onChange(idsArray)` fires when the dialog is applied, not per tick — the
+ * caller buffers this alongside the label's other fields.
+ */
+export function scopePicker(initialCsv, onChange) {
+  let ids = new Set(
+    String(initialCsv || '').split('|').map((s) => s.trim()).filter(Boolean),
+  );
+
+  const caption = el('span', { class: 'icon-picker-name' });
+  const preview = el('span', { class: 'micon', style: 'font-size:21px', text: 'public' });
+
+  const paint = () => {
+    const live = [...ids].filter((id) => taxonomy.scopeLabelFor(id));
+    preview.textContent = live.length ? 'filter_alt' : 'public';
+    caption.textContent = live.length
+      ? live.map((id) => taxonomy.scopeLabelFor(id)).join(', ')
+      : 'Everywhere';
+  };
+  paint();
+
+  const trigger = el('button', {
+    type: 'button',
+    class: 'icon-picker-trigger',
+    onclick: (e) => { e.preventDefault(); open(); },
+  }, [preview, caption, el('span', { class: 'micon icon-picker-caret', text: 'chevron_right' })]);
+
+  function open() {
+    const draft = new Set(ids);
+    let close = () => {};
+
+    const rowFor = (id, name, depth) => {
+      const check = el('input', {
+        type: 'checkbox',
+        checked: draft.has(id) || null,
+        onchange: (e) => { if (e.target.checked) draft.add(id); else draft.delete(id); },
+      });
+      return el('label', {
+        class: 'scope-row',
+        style: `--indent:${depth * 18}px`,
+      }, [check, el('span', { text: name || '(unnamed)' })]);
+    };
+
+    close = openModal({
+      title: 'Where does this label show?',
+      icon: '🎯',
+      render: (body, dismiss) => {
+        close = dismiss;
+        body.append(el('div', {
+          class: 'hint',
+          style: 'margin-bottom:12px',
+          text: 'Tick nothing to offer this label everywhere. Ticking a category '
+            + 'covers everything nested inside it.',
+        }));
+
+        const expense = expenseTree();
+        if (expense.length) {
+          body.append(el('div', { class: 'usage-group-label', text: 'Expense categories' }));
+          body.append(el('div', { class: 'scope-list' },
+            expense.map(({ row, depth }) => rowFor(row.id, row.name, depth))));
+        }
+
+        const noteCats = taxonomy.list(taxonomy.KIND_NOTE_CATEGORY);
+        if (noteCats.length) {
+          body.append(el('div', {
+            class: 'usage-group-label',
+            style: 'margin-top:14px',
+            text: 'Note categories',
+          }));
+          body.append(el('div', { class: 'scope-list' },
+            noteCats.map((row) => rowFor(row.id, row.name, 0))));
+        }
+      },
+      actions: (dismiss) => [
+        el('button', {
+          class: 'btn btn-ghost',
+          text: 'Everywhere',
+          title: 'Clear every tick — offer this label in all categories',
+          onclick: () => { ids = new Set(); paint(); onChange([]); dismiss(); },
+        }),
+        el('button', { class: 'btn btn-ghost', text: 'Cancel', onclick: dismiss }),
+        el('button', {
+          class: 'btn',
+          text: 'Apply',
+          onclick: () => { ids = draft; paint(); onChange([...draft]); dismiss(); },
+        }),
+      ],
+    });
+  }
+
+  return el('div', { class: 'icon-picker' }, [trigger]);
 }
 
 // A small palette plus a custom swatch. Presets exist because picking from a
