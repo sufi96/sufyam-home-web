@@ -388,19 +388,84 @@ export const ICON_KEYS = Object.fromEntries(
   ICON_GROUPS.flatMap((g) => Object.entries(g.icons)),
 );
 
-/** Material ligature for a stored key; falls back the way the phone does. */
+// ---------- hand-curated extras: emoji + month numbers ----------
+//
+// NOT part of the Dart-generated map above, and not guaranteed to render as
+// anything meaningful on the phone until its icon map grows matching entries
+// — these are plain Unicode characters keyed by name, not Material Symbol
+// ligatures, so isTextIcon() below is what tells iconEl() to print them as
+// themselves instead of running them through the icon font.
+export const EXTRA_ICON_GROUPS = [
+  {
+    label: 'Months',
+    icons: Object.fromEntries(
+      Array.from({ length: 12 }, (_, i) => [`month-${i + 1}`, String(i + 1)]),
+    ),
+  },
+  {
+    label: 'Emoji',
+    icons: {
+      emoji_party: '🎉',
+      emoji_birthday: '🎂',
+      emoji_home: '🏠',
+      emoji_car: '🚗',
+      emoji_medicine: '💊',
+      emoji_calendar: '📅',
+      emoji_heart: '❤️',
+      emoji_gift: '🎁',
+      emoji_food: '🍔',
+      emoji_coffee: '☕',
+      emoji_education: '🎓',
+      emoji_travel: '✈️',
+      emoji_pet: '🐾',
+      emoji_money: '💰',
+      emoji_card: '💳',
+      emoji_fire: '🔥',
+      emoji_star: '⭐',
+      emoji_warning: '⚠️',
+      emoji_check: '✅',
+      emoji_cross: '❌',
+      emoji_lock: '🔒',
+      emoji_holiday: '🎄',
+      emoji_receipt: '🧾',
+      emoji_package: '📦',
+      emoji_cart: '🛒',
+      emoji_hospital: '🏥',
+      emoji_sparkle: '🌟',
+      emoji_clock: '🕐',
+      emoji_phone: '📱',
+      emoji_water: '💧',
+    },
+  },
+];
+
+export const EXTRA_ICON_KEYS = Object.fromEntries(
+  EXTRA_ICON_GROUPS.flatMap((g) => Object.entries(g.icons)),
+);
+
+/** Every group the icon picker offers, generated ones first. */
+export const ALL_ICON_GROUPS = [...ICON_GROUPS, ...EXTRA_ICON_GROUPS];
+
+/** Material ligature — or literal glyph for an extra — for a stored key. */
 export function glyphFor(key) {
-  return ICON_KEYS[String(key || '').toLowerCase()] || 'category';
+  const k = String(key || '').toLowerCase();
+  return ICON_KEYS[k] || EXTRA_ICON_KEYS[k] || 'category';
 }
 
 export function isKnownIcon(key) {
-  return Boolean(ICON_KEYS[String(key || '').toLowerCase()]);
+  const k = String(key || '').toLowerCase();
+  return Boolean(ICON_KEYS[k] || EXTRA_ICON_KEYS[k]);
+}
+
+/** True for emoji/number glyphs, which print as themselves, not as an icon-font ligature. */
+export function isTextIcon(key) {
+  return Boolean(EXTRA_ICON_KEYS[String(key || '').toLowerCase()]);
 }
 
 /** An <span> rendering the icon for a stored key. */
 export function iconEl(key, { size = 18, className = '' } = {}) {
   const node = document.createElement('span');
-  node.className = `micon ${className}`.trim();
+  node.className = isTextIcon(key) ? className.trim() : `micon ${className}`.trim();
   node.textContent = glyphFor(key);
   node.style.fontSize = `${size}px`;
   return node;

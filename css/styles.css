@@ -1699,6 +1699,8 @@ td.actions { text-align: right; white-space: nowrap; }
 .colour-picker { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .colour-picker.is-compact { gap: 0; }
 
+.colour-dots { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
 .colour-dot {
   width: 26px;
   height: 26px;
@@ -1727,6 +1729,12 @@ td.actions { text-align: right; white-space: nowrap; }
 
 .colour-picker .colour-swatch { width: 30px; height: 26px; padding: 2px; }
 .colour-picker.is-compact .colour-swatch { width: 32px; height: 32px; }
+
+/* Bigger targets for a page where picking a colour IS the task, not a small
+   accent inside a longer form. */
+.colour-picker.is-large .colour-dot { width: 36px; height: 36px; }
+.colour-picker.is-large .colour-dot .micon { font-size: 19px; }
+.colour-picker.is-large .colour-swatch { width: 52px; height: 36px; }
 
 /* ---------- Note blocks ---------- */
 
@@ -2451,6 +2459,42 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
 }
 .detail-items .pane-title { margin-bottom: 8px; }
 .detail-items .hint { margin: 0; }
+
+.usage-group + .usage-group { margin-top: 12px; }
+
+.usage-group-label {
+  font-size: 11px;
+  font-weight: 660;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: 4px;
+}
+
+.usage-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.usage-row:last-child { border-bottom: 0; }
+
+.usage-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.usage-row-meta {
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
 
 .detail-actions {
   display: flex;

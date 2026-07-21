@@ -5,7 +5,7 @@
 // These pick from the known set instead, and additions go into the Taxonomy
 // data bank so every device sees them.
 
-import { ICON_GROUPS, glyphFor, isKnownIcon } from '../icons.js';
+import { ALL_ICON_GROUPS, iconEl, isKnownIcon } from '../icons.js';
 import * as taxonomy from '../taxonomy.js';
 import { el, clear, toast, openModal } from '../ui.js';
 
@@ -20,22 +20,30 @@ import { el, clear, toast, openModal } from '../ui.js';
 export function iconPicker(initial, onChange) {
   let value = isKnownIcon(initial) ? String(initial).toLowerCase() : '';
 
-  const preview = el('span', { class: 'micon', text: value ? glyphFor(value) : 'add_reaction' });
+  const previewHost = el('span', { class: 'icon-picker-preview' });
   const caption = el('span', { class: 'icon-picker-name', text: value || 'Choose an icon' });
+
+  const paintPreview = () => {
+    clear(previewHost);
+    previewHost.append(value
+      ? iconEl(value, { size: 21 })
+      : el('span', { class: 'micon', style: 'font-size:21px', text: 'add_reaction' }));
+  };
+  paintPreview();
 
   const trigger = el('button', {
     type: 'button',
     class: 'icon-picker-trigger',
     onclick: (e) => { e.preventDefault(); open(); },
   }, [
-    preview,
+    previewHost,
     caption,
     el('span', { class: 'micon icon-picker-caret', text: 'chevron_right' }),
   ]);
 
   function set(key) {
     value = key;
-    preview.textContent = key ? glyphFor(key) : 'add_reaction';
+    paintPreview();
     caption.textContent = key || 'Choose an icon';
     onChange(key);
   }
@@ -47,7 +55,7 @@ export function iconPicker(initial, onChange) {
     const renderGrid = () => {
       clear(grid);
       let shown = 0;
-      for (const group of ICON_GROUPS) {
+      for (const group of ALL_ICON_GROUPS) {
         const matches = Object.keys(group.icons).filter((k) => !filter || k.includes(filter));
         if (!matches.length) continue;
         shown += matches.length;
@@ -58,7 +66,7 @@ export function iconPicker(initial, onChange) {
           title: key,
           onclick: (e) => { e.preventDefault(); set(key); close(); },
         }, [
-          el('span', { class: 'micon', text: glyphFor(key) }),
+          iconEl(key, { size: 22 }),
           el('span', { class: 'icon-cell-name', text: key }),
         ]))));
       }
@@ -79,7 +87,7 @@ export function iconPicker(initial, onChange) {
             el('input', {
               class: 'input',
               type: 'search',
-              placeholder: 'Search 216 icons…',
+              placeholder: `Search ${ALL_ICON_GROUPS.reduce((n, g) => n + Object.keys(g.icons).length, 0)} icons…`,
               oninput: (e) => { filter = e.target.value.trim().toLowerCase(); renderGrid(); },
             }),
             el('button', {
@@ -261,50 +269,61 @@ const PRESETS = [
 
 /**
  * Colour picker. `onChange(hex)` fires with '' when cleared.
- * `compact` renders just the swatch, for tight rows.
+ * `compact` renders just the swatch, for tight rows. `large` bumps the
+ * swatch/dot size up for a page where colour is the main thing being edited.
  */
-export function colourPicker(initial, onChange, { compact = false } = {}) {
+export function colourPicker(initial, onChange, { compact = false, large = false } = {}) {
   let value = normaliseHex(initial);
 
-  const wrap = el('div', { class: `colour-picker${compact ? ' is-compact' : ''}` });
+  const wrap = el('div', {
+    class: `colour-picker${compact ? ' is-compact' : ''}${large ? ' is-large' : ''}`,
+  });
+  const dots = compact ? null : el('div', { class: 'colour-dots' });
 
-  const render = () => {
-    clear(wrap);
+  const paintDots = () => {
+    if (!dots) return;
+    clear(dots);
+    dots.append(el('button', {
+      type: 'button',
+      class: `colour-dot is-none${value ? '' : ' is-active'}`,
+      title: 'No colour',
+      onclick: (e) => { e.preventDefault(); set(''); },
+    }, [el('span', { class: 'micon', style: 'font-size:15px', text: 'block' })]));
 
-    if (!compact) {
-      wrap.append(el('button', {
+    for (const hex of PRESETS) {
+      dots.append(el('button', {
         type: 'button',
-        class: `colour-dot is-none${value ? '' : ' is-active'}`,
-        title: 'No colour',
-        onclick: (e) => { e.preventDefault(); value = ''; onChange(''); render(); },
-      }, [el('span', { class: 'micon', style: 'font-size:15px', text: 'block' })]));
-
-      for (const hex of PRESETS) {
-        wrap.append(el('button', {
-          type: 'button',
-          class: `colour-dot${value === hex ? ' is-active' : ''}`,
-          style: `background:${hex}`,
-          title: hex,
-          onclick: (e) => { e.preventDefault(); value = hex; onChange(hex); render(); },
-        }));
-      }
+        class: `colour-dot${value === hex ? ' is-active' : ''}`,
+        style: `background:${hex}`,
+        title: hex,
+        onclick: (e) => { e.preventDefault(); set(hex); },
+      }));
     }
-
-    const custom = el('input', {
-      type: 'color',
-      class: 'colour-swatch',
-      value: value || '#66bb6a',
-      title: compact ? 'Colour' : 'Custom colour',
-      oninput: (e) => {
-        value = e.target.value;
-        onChange(value);
-        if (!compact) render();
-      },
-    });
-    wrap.append(custom);
   };
 
-  render();
+  // The <input type=color> swatch is created once and never torn down for
+  // the life of this picker — a previous version rebuilt the whole wrapper
+  // (including this element) on every change, and removing the element the
+  // browser's native colour dialog is anchored to closes that dialog the
+  // instant you click a shade inside it.
+  const swatch = el('input', {
+    type: 'color',
+    class: 'colour-swatch',
+    value: value || '#66bb6a',
+    title: compact ? 'Colour' : 'Custom colour',
+    oninput: (e) => { value = e.target.value; onChange(value); paintDots(); },
+  });
+
+  function set(hex) {
+    value = hex;
+    swatch.value = hex || '#66bb6a';
+    onChange(hex);
+    paintDots();
+  }
+
+  if (dots) { wrap.append(dots); paintDots(); }
+  wrap.append(swatch);
+
   return wrap;
 }
 

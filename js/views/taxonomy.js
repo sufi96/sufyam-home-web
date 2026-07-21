@@ -15,12 +15,23 @@
 
 import * as repo from '../repo.js';
 import * as taxonomy from '../taxonomy.js';
+import { schemaFor } from '../schema.js';
 import { categoryBadge, rowTint } from './cattree.js';
 import { colourPicker, iconPicker } from './pickers.js';
 import { field } from './catfields.js';
 import {
-  el, clear, toast, openModal, confirmDialog, emptyState,
+  el, clear, toast, openModal, confirmDialog, emptyState, fmtMoney, fmtDate,
 } from '../ui.js';
+
+// How to summarise one matching row under "Appears in", per source tab.
+// Falls back to no subtitle for a tab that isn't listed.
+const ROW_META = {
+  Transactions: (r) => `${fmtMoney(r.amount)} · ${fmtDate(r.transaction_date)}`,
+  Notes: (r) => fmtDate(r.updated_at),
+  Records_Reminders: (r) => `Due ${fmtDate(r.due_date)}`,
+};
+
+const MAX_USAGE_ROWS = 6;
 
 const KINDS = [
   {
@@ -194,7 +205,8 @@ export function renderTaxonomy(container) {
       return;
     }
 
-    const count = usageOf(activeKind, row.name);
+    const groups = usageDetails(activeKind, row.name);
+    const count = groups.reduce((n, g) => n + g.rows.length, 0);
 
     detailPane.append(el('div', { class: 'card' }, [
       el('div', { class: 'detail-head' }, [
@@ -215,8 +227,9 @@ export function renderTaxonomy(container) {
           onchange: (e) => renameField(row.id, e.target),
         }), { required: true }),
         field('Icon', iconPicker(row.icon_key, (v) => setField(row.id, 'icon_key', v))),
-        field('Colour', colourPicker(row.color_hex, (v) => setField(row.id, 'color_hex', v))),
+        field('Colour', colourPicker(row.color_hex, (v) => setField(row.id, 'color_hex', v), { large: true })),
       ]),
+      groups.length ? usageSection(groups) : null,
       el('div', { class: 'detail-actions' }, [
         el('button', {
           class: 'btn btn-ghost btn-danger',
@@ -363,6 +376,33 @@ function fieldMatches(src, row, key) {
     return raw.split('|').map((s) => s.trim().toLowerCase()).includes(key);
   }
   return raw.trim().toLowerCase() === key;
+}
+
+/** The actual rows a label/category appears on, grouped by source tab. */
+function usageDetails(kind, name) {
+  const key = name.trim().toLowerCase();
+  const groups = [];
+  for (const src of metaOf(kind).sources) {
+    const rows = repo.rows(src.tab).filter((row) => fieldMatches(src, row, key));
+    if (rows.length) groups.push({ tab: src.tab, rows });
+  }
+  return groups;
+}
+
+function usageSection(groups) {
+  return el('div', { class: 'detail-items' }, [
+    el('div', { class: 'pane-title', text: 'Appears in' }),
+    ...groups.map(({ tab, rows }) => el('div', { class: 'usage-group' }, [
+      el('div', { class: 'usage-group-label', text: `${schemaFor(tab).label} (${rows.length})` }),
+      ...rows.slice(0, MAX_USAGE_ROWS).map((r) => el('div', { class: 'usage-row' }, [
+        el('span', { class: 'usage-row-title', text: schemaFor(tab).title(r) || '(untitled)' }),
+        el('span', { class: 'usage-row-meta', text: (ROW_META[tab] || (() => ''))(r) }),
+      ])),
+      rows.length > MAX_USAGE_ROWS
+        ? el('div', { class: 'hint', text: `+${rows.length - MAX_USAGE_ROWS} more` })
+        : null,
+    ])),
+  ]);
 }
 
 async function refileRename(kind, before, after) {
