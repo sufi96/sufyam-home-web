@@ -91,15 +91,34 @@ export function renderTaxonomy(container) {
   let query = '';
   let sortMode = 'usage'; // 'usage' | 'name'
   let selectedId = null;
+  let saving = false;
+
+  // Buffered edits for the selected row: { id, patch }. Name, icon and colour
+  // all live on the SAME sheet row, so writing each one as it changes cost
+  // three round-trips (six API calls with the changelog append each one drags
+  // along) to set three fields. Google's write quota is 60/minute, which a
+  // handful of labels edited back to back was enough to exhaust. Held here
+  // and flushed as one repo.save() instead.
+  let pending = null;
 
   const treePane = el('div', { class: 'pane' });
   const detailPane = el('div', { class: 'pane' });
+  const saveHost = el('div');
+
+  const isDirty = () => Boolean(pending && Object.keys(pending.patch).length);
+
+  /** A row as the user currently sees it — stored values plus unsaved edits. */
+  function effective(row) {
+    if (!row) return row;
+    return pending && pending.id === row.id ? { ...row, ...pending.patch } : row;
+  }
 
   paintAll();
 
   function paintAll() {
     clear(container);
-    container.append(toolbar(), el('div', { class: 'cat-split' }, [treePane, detailPane]));
+    container.append(toolbar(), saveHost, el('div', { class: 'cat-split' }, [treePane, detailPane]));
+    paintSaveBar();
     paintList();
     paintDetail();
   }
@@ -110,13 +129,13 @@ export function renderTaxonomy(container) {
       el('div', { class: 'tax-tabs' }, KINDS.map((k) => el('button', {
         type: 'button',
         class: `tax-tab${k.kind === activeKind ? ' is-active' : ''}`,
-        onclick: () => {
+        onclick: () => withFlush(() => {
           if (k.kind === activeKind) return;
           activeKind = k.kind;
           query = '';
           selectedId = null;
           paintAll();
-        },
+        }),
       }, k.label))),
       el('input', {
         class: 'input search',
@@ -136,16 +155,46 @@ export function renderTaxonomy(container) {
       el('button', {
         class: 'btn',
         text: `+ New ${meta.singular.toLowerCase()}`,
-        onclick: openCreate,
+        onclick: () => withFlush(openCreate),
       }),
     ]);
+  }
+
+  function paintSaveBar() {
+    clear(saveHost);
+    if (!isDirty()) return;
+    const row = taxonomy.byId(activeKind, pending.id);
+    saveHost.append(el('div', { class: 'save-bar' }, [
+      el('span', { class: 'save-dot' }),
+      el('span', {
+        class: 'save-text',
+        text: `Unsaved changes to "${row?.name || 'this entry'}"`,
+      }),
+      el('div', { class: 'spacer' }),
+      el('button', {
+        class: 'btn btn-ghost btn-sm',
+        text: 'Discard',
+        disabled: saving,
+        onclick: () => { pending = null; paintAll(); },
+      }),
+      el('button', {
+        class: 'btn btn-sm',
+        text: saving ? 'Saving…' : 'Save',
+        disabled: saving,
+        onclick: () => save(),
+      }),
+    ]));
   }
 
   function visibleRows() {
     const all = taxonomy.list(activeKind);
     const shown = query ? all.filter((r) => r.name.toLowerCase().includes(query)) : all;
+    // One pass over the source tabs for every row, rather than a full scan of
+    // Transactions and Notes per label — that was O(labels × transactions) on
+    // each repaint, and the list repaints on every keystroke in the search box.
+    const counts = usageCounts(activeKind);
     return shown
-      .map((row) => ({ row, count: usageOf(activeKind, row.name) }))
+      .map((row) => ({ row, count: counts.get(row.name.trim().toLowerCase()) || 0 }))
       .sort((a, b) => (sortMode === 'usage'
         ? (b.count - a.count) || a.row.name.localeCompare(b.row.name)
         : a.row.name.localeCompare(b.row.name)));
@@ -173,13 +222,21 @@ export function renderTaxonomy(container) {
     }
   }
 
-  function listRow(row, count) {
+  function listRow(storedRow, count) {
+    // Rendered from the buffered view so an unsaved colour or icon shows up
+    // here the moment it's picked, not only after Save.
+    const row = effective(storedRow);
     return el('div', {
-      class: `cat-row depth-0${row.id === selectedId ? ' is-selected' : ''}`,
-      style: rowTint(row.color_hex, 0),
-      onclick: () => { selectedId = row.id; paintList(); paintDetail(); },
+      // Depth 1 rather than 0: the same soft tint the Categories tree gives a
+      // subcategory. A depth-0 row is filled with the colour at full strength
+      // and flips its text to black or white to survive that — fine when it's
+      // heading a group of paler rows beneath it, but a whole list of them is
+      // a wall of saturated blocks.
+      class: `cat-row tax-row${row.id === selectedId ? ' is-selected' : ''}`,
+      style: rowTint(row.color_hex, 1),
+      onclick: () => withFlush(() => { selectedId = row.id; paintList(); paintDetail(); }),
     }, [
-      categoryBadge(row, 26, { onColour: true }),
+      categoryBadge(row, 26),
       el('span', { class: 'tax-row-name', text: row.name || '(unnamed)' }),
       count
         ? el('span', { class: 'chip', title: `Used ${count} time${count === 1 ? '' : 's'}`, text: String(count) })
@@ -220,16 +277,19 @@ export function renderTaxonomy(container) {
   function paintDetail() {
     clear(detailPane);
     const meta = metaOf(activeKind);
-    const row = selectedId ? taxonomy.byId(activeKind, selectedId) : null;
+    const stored = selectedId ? taxonomy.byId(activeKind, selectedId) : null;
 
-    if (!row) {
+    if (!stored) {
       detailPane.append(el('div', { class: 'card detail-empty' }, [
         emptyState('👈', `Select a ${meta.singular.toLowerCase()} to edit it.`),
       ]));
       return;
     }
 
-    const groups = usageDetails(activeKind, row.name);
+    const row = effective(stored);
+    // Usage is looked up by the STORED name: other tabs still reference the
+    // old one until a rename is actually saved and refiled.
+    const groups = usageDetails(activeKind, stored.name);
     const count = groups.reduce((n, g) => n + g.rows.length, 0);
 
     detailPane.append(el('div', { class: 'card' }, [
@@ -248,16 +308,16 @@ export function renderTaxonomy(container) {
           class: 'input',
           type: 'text',
           value: row.name || '',
-          onchange: (e) => renameField(row.id, e.target),
+          oninput: (e) => setField(stored.id, 'name', e.target.value),
         }), { required: true }),
-        field('Icon', iconPicker(row.icon_key, (v) => setField(row.id, 'icon_key', v))),
-        field('Colour', colourPicker(row.color_hex, (v) => setField(row.id, 'color_hex', v), { large: true })),
+        field('Icon', iconPicker(row.icon_key, (v) => setField(stored.id, 'icon_key', v))),
+        field('Colour', colourPicker(row.color_hex, (v) => setField(stored.id, 'color_hex', v), { large: true })),
       ]),
       el('div', { class: 'detail-actions' }, [
         el('button', {
           class: 'btn btn-ghost btn-danger',
           text: `Delete ${meta.singular.toLowerCase()}`,
-          onclick: () => remove(row.id),
+          onclick: () => remove(stored.id),
         }),
       ]),
     ]));
@@ -269,50 +329,65 @@ export function renderTaxonomy(container) {
   }
 
   /**
-   * Writes through immediately rather than buffering behind a Save button —
-   * this bank rarely holds more than a few dozen rows, so a session of edits
-   * is a handful of small writes, not the twenty-drag batch that buffering in
-   * Inventory/Categories exists to collapse.
+   * Records one field edit in the buffer. Nothing is written here — save()
+   * flushes all three fields as a single row write.
    *
-   * Looks the row up fresh by id rather than trusting a closure over the row
-   * object the detail pane was rendered with: the pane doesn't repaint after
-   * an icon/colour edit (see below), so a stale object here would carry old
-   * field values into taxonomy.update()'s `{...entry, ...patch}` merge and
-   * silently undo whatever the previous edit in this same session just wrote.
+   * A value that matches what's stored drops out of the buffer again, so
+   * typing a name and undoing it leaves the page clean rather than dirty.
    *
-   * Only the list repaints, not the detail pane: repainting the very picker
-   * the user is mid-click in (the colour swatch, the icon dialog) would yank
-   * the control out from under them.
+   * The list repaints (to preview the change) but the detail pane does not:
+   * rebuilding the very picker the user is mid-click in — the colour swatch,
+   * the open icon dialog — would yank the control out from under them.
    */
-  async function setField(rowId, key, value) {
-    const current = taxonomy.byId(activeKind, rowId);
-    if (!current) return;
-    try {
-      await taxonomy.update(current, { [key]: value });
-      paintList();
-    } catch (err) { toast(err.message, { error: true }); }
+  function setField(rowId, key, value) {
+    const stored = taxonomy.byId(activeKind, rowId);
+    if (!stored) return;
+    if (!pending || pending.id !== rowId) pending = { id: rowId, patch: {} };
+    if (String(value ?? '') === String(stored[key] ?? '')) delete pending.patch[key];
+    else pending.patch[key] = value;
+    if (!Object.keys(pending.patch).length) pending = null;
+    paintList();
+    paintSaveBar();
   }
 
-  async function renameField(rowId, input) {
-    const current = taxonomy.byId(activeKind, rowId);
-    if (!current) return;
-    const clean = input.value.trim();
-    if (!clean || clean === current.name) { input.value = current.name; return; }
-    if (clean.toLowerCase() !== current.name.trim().toLowerCase()) {
-      const dup = taxonomy.names(activeKind).some((n) => n.toLowerCase() === clean.toLowerCase());
-      if (dup) { input.value = current.name; toast(`"${clean}" already exists`, { error: true }); return; }
+  async function save() {
+    if (!isDirty() || saving) return true;
+    const { id, patch } = pending;
+    const stored = taxonomy.byId(activeKind, id);
+    if (!stored) { pending = null; return true; }
+
+    const before = stored.name;
+    const after = patch.name === undefined ? before : String(patch.name).trim();
+    if (!after) return toast('Name is required', { error: true }) || false;
+    if (after.toLowerCase() !== before.trim().toLowerCase()
+      && taxonomy.names(activeKind).some((n) => n.toLowerCase() === after.toLowerCase())) {
+      toast(`"${after}" already exists`, { error: true });
+      return false;
     }
+
+    saving = true;
+    paintSaveBar();
     try {
-      const before = current.name;
-      const saved = await taxonomy.update(current, { name: clean });
-      if (saved.name !== before) await refileRename(activeKind, before, saved.name);
+      // One write for the row, whatever mix of name/icon/colour changed.
+      await taxonomy.update(stored, { ...patch, name: after });
+      // Only a rename has to reach into the other tabs, and only then.
+      if (after !== before) await refileRename(activeKind, before, after);
+      pending = null;
       toast('Saved');
-      paintList();
-      paintDetail();
+      return true;
     } catch (err) {
-      input.value = current.name;
       toast(err.message, { error: true });
+      return false;
+    } finally {
+      saving = false;
+      paintAll();
     }
+  }
+
+  /** Saves any buffered edit before an action that would otherwise strand it. */
+  async function withFlush(action) {
+    if (isDirty() && !(await save())) return;
+    action();
   }
 
   // ---------- create / delete ----------
@@ -377,10 +452,11 @@ export function renderTaxonomy(container) {
     try {
       await taxonomy.remove(row);
       if (count) await refileRemove(activeKind, row.name);
+      // Any buffered edit to this row died with it.
+      if (pending?.id === row.id) pending = null;
       if (selectedId === row.id) selectedId = null;
       toast('Deleted');
-      paintList();
-      paintDetail();
+      paintAll();
     } catch (err) { toast(err.message, { error: true }); }
   }
 }
@@ -396,6 +472,31 @@ function usageOf(kind, name) {
     }
   }
   return count;
+}
+
+/**
+ * How many rows carry each name of this kind, keyed by lowercase name — the
+ * whole list's counts in a single pass over the source tabs.
+ *
+ * A row that somehow carries the same label twice still counts once, matching
+ * what a per-row `some()` check would have said.
+ */
+function usageCounts(kind) {
+  const counts = new Map();
+  for (const src of metaOf(kind).sources) {
+    for (const row of repo.rows(src.tab)) {
+      const raw = String(row[src.field] || '');
+      const tokens = src.mode === 'pipe' ? raw.split('|') : [raw];
+      const seen = new Set();
+      for (const token of tokens) {
+        const key = token.trim().toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+    }
+  }
+  return counts;
 }
 
 function fieldMatches(src, row, key) {

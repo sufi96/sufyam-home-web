@@ -2646,3 +2646,22 @@ th:hover .table-del, td:hover .table-del, tr:hover .table-row-actions .table-del
    rename target (renaming happens in the detail pane), so it skips that
    class's text-cursor/hover affordance. */
 .tax-row-name { font-weight: 610; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* Rows take the soft subcategory tint (rowTint depth 1) rather than a
+   full-strength fill, plus a solid bar of the actual chosen colour so the
+   pick still reads at a glance against the wash. The tree's own nested rows
+   draw their rail outside the row via ::before at a negative offset, which
+   depends on an indent these flat rows don't have — hence a border here. */
+.cat-row.tax-row {
+  border-left: 3px solid var(--row-accent, var(--border));
+  margin-top: 4px;
+}
+.cat-row.tax-row:first-child { margin-top: 0; }
+
+/* Beats the plain .cat-row:hover grey, which would wash the tint out entirely
+   on the one interaction where you most want to see which row you're on. */
+.cat-row.tax-row:hover {
+  background: color-mix(in srgb, var(--row-accent) 28%, var(--surface));
+}
+
+.save-bar .spacer { flex: 1; }
